@@ -6,7 +6,7 @@ compatibility_date = "2024-11-01"
 # Create with:  wrangler kv:namespace create CC_DATA
 # Then paste the returned id below.
 kv_namespaces = [
-  { binding = "CC_DATA", id = "REPLACE_WITH_YOUR_KV_NAMESPACE_ID" }
+  { binding = "CCv4_DATA", id = "359bdf1ba6d34a0ea683add47fe1f25e" }
 ]
 
 # --- Teacher password ---
