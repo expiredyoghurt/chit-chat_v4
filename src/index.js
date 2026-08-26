@@ -48,7 +48,7 @@ const GROQ_MODEL_OPTIONS = [
 const DEFAULT_RUBRIC = `TREES is marked out of 25 marks total, distributed as follows:
 - T Thought: 0-2 marks
 - R Reason: 0-3 marks
-- E Evidence (from the picture/topic): 0-3 marks
+- E Examples (from the picture/topic): 0-3 marks
 - E Experience: 0-15 marks (the most heavily weighted part)
 - S Suggestion: 0-2 marks
 
@@ -63,7 +63,7 @@ const DEFAULT_RUBRIC = `TREES is marked out of 25 marks total, distributed as fo
 2 = relevant reason but with limited explanation
 3 = clear, relevant reason with some elaboration
 
---- E Evidence from picture/topic (0-3) ---
+--- E Example from picture/topic to elaborate on the thoughts and/or reasons (0-3) ---
 0 = no reference to the picture or topic
 1 = mentions the picture vaguely
 2 = identifies a relevant detail from the picture or topic
@@ -259,7 +259,7 @@ async function ensureSeeded(env) {
 const TREES_ORDER = [
   ["T", "Thought", 2],
   ["R", "Reason", 3],
-  ["E1", "Evidence", 3],
+  ["E1", "Example", 3],
   ["E2", "Experience", 15],
   ["S", "Suggestion", 2],
 ];
@@ -291,7 +291,7 @@ const SEQUENCE_RE = /\b(at\s+first|then|after\s+that|in\s+the\s+end|finally|next
 
 const THOUGHT_RE = /\b(i think|in my opinion|i believe|i feel that)\b/i;
 const REASON_RE = /\bbecause\b/i;
-const EVIDENCE_RE = /\b(in the picture|i can see|the picture shows|this shows)\b/i;
+const EXAMPLE_RE = /\b(in the picture|i can see|the picture shows|this shows)\b/i;
 const SUGGESTION_RE = /\b(i suggest|should|could|in future|we can|in the future)\b/i;
 
 const STOPWORDS = new Set(["this", "that", "with", "from", "about", "your", "their", "which", "there", "would", "could", "should", "picture", "topic", "image"]);
@@ -364,7 +364,7 @@ function ruleBasedScoreTrees(parts, keywords) {
     }
 
     // Each part now needs content matching what it's actually meant to contain
-    // (a thought, a reason, evidence, a suggestion) - word count alone is only
+    // (a thought, a reason, example, a suggestion) - word count alone is only
     // ever enough for partial credit, never full marks.
     let pts = 0;
     if (key === "T") {
@@ -373,7 +373,7 @@ function ruleBasedScoreTrees(parts, keywords) {
       pts = REASON_RE.test(text) && words >= 8 ? max : REASON_RE.test(text) ? Math.min(max, 2) : words >= 10 ? Math.min(max, 1) : 0;
     } else if (key === "E1") {
       const onTopic = mentionsTopic(text, keywords);
-      pts = EVIDENCE_RE.test(text) && onTopic ? max : EVIDENCE_RE.test(text) || onTopic ? Math.min(max, 2) : words >= 5 ? Math.min(max, 1) : 0;
+      pts = EXAMPLE_RE.test(text) && onTopic ? max : EXAMPLE_RE.test(text) || onTopic ? Math.min(max, 2) : words >= 5 ? Math.min(max, 1) : 0;
     } else {
       pts = SUGGESTION_RE.test(text) && words >= 5 ? max : SUGGESTION_RE.test(text) ? Math.min(max, 1) : 0;
     }
@@ -407,10 +407,10 @@ function ruleBasedScoreSingle(text, keywords) {
       });
       continue;
     }
-    const re = key === "T" ? THOUGHT_RE : key === "R" ? REASON_RE : key === "E1" ? EVIDENCE_RE : SUGGESTION_RE;
+    const re = key === "T" ? THOUGHT_RE : key === "R" ? REASON_RE : key === "E1" ? EXAMPLE_RE : SUGGESTION_RE;
     let pts = 0;
     if (key === "E1") {
-      // evidence in a combined answer should also actually reference the topic
+      // example in a combined answer should also actually reference the topic
       pts = re.test(text) && onTopic ? max : re.test(text) || onTopic ? Math.min(max, 2) : 0;
     } else if (re.test(text)) {
       pts = max;
@@ -507,10 +507,10 @@ function normalizeAiResult(raw, markedBy) {
 function buildPrompts(topic, question, mode, data, rubricText) {
   const modeInstruction =
     mode === "single"
-      ? `The pupil's answer below is ONE continuous piece of spoken text - it is NOT split into labelled parts. Read it carefully and identify each TREES component (Thought, Reason, Evidence, Experience, Suggestion) wherever it appears in the text, even if the pupil blends parts together or states them out of order, then mark each part using the same rubric. If a component is genuinely absent from their answer, score that part 0.`
+      ? `The pupil's answer below is ONE continuous piece of spoken text - it is NOT split into labelled parts. Read it carefully and identify each TREES component (Thought, Reason, Example, Experience, Suggestion) wherever it appears in the text, even if the pupil blends parts together or states them out of order, then mark each part using the same rubric. If a component is genuinely absent from their answer, score that part 0.`
       : `The pupil's answer below IS already split into 5 labelled parts. Mark each part as given.`;
 
-  const system = `You are a supportive but honest Primary School English oral examiner in Singapore, marking a pupil's spoken response using the TREES framework (Thought, Reason, Evidence, Experience, Suggestion).
+  const system = `You are a supportive but honest Primary School English oral examiner in Singapore, marking a pupil's spoken response using the TREES framework (Thought, Reason, Example, Experience, Suggestion).
 
 Marking rubric (set by the teacher), out of 25 marks total:
 ${rubricText}
@@ -525,7 +525,7 @@ Respond with ONLY valid JSON, no markdown fences, no preamble, no explanation be
   "breakdown": [
     { "part": "Thought", "points": 0, "max": 2, "note": "short comment, max 25 words" },
     { "part": "Reason", "points": 0, "max": 3, "note": "short comment, max 25 words" },
-    { "part": "Evidence", "points": 0, "max": 3, "note": "short comment, max 25 words" },
+    { "part": "Example", "points": 0, "max": 3, "note": "short comment, max 25 words" },
     { "part": "Experience", "points": 0, "max": 15, "note": "short comment, max 25 words",
       "subBreakdown": [
         { "label": "Relevance", "points": 0, "max": 2 },
