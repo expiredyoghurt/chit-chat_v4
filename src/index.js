@@ -2,7 +2,7 @@
  * Just a Chit-Chat
  * Cloudflare Worker backend + single-file frontend.
  *
- * KV layout (binding: CC_DATA)
+ * KV layout (binding: CCv4_DATA)
  *   config:teacher_password        -> string
  *   config:rubric                  -> string (free-text marking rubric shown to the AI marker)
  *   config:model_groq              -> string (Groq model ID used by callGroq; defaults to DEFAULT_GROQ_MODEL if unset)
@@ -157,7 +157,7 @@ async function hashPassword(password, salt) {
 // transparently upgrade the stored value to the salted-hash format so the
 // plaintext isn't left sitting in KV any longer than necessary.
 async function verifyTeacherPassword(env, password) {
-  const stored = await env.CC_DATA.get("config:teacher_password");
+  const stored = await env.CCv4_DATA.get("config:teacher_password");
   if (!stored) return { ok: false, unset: true };
 
   let record = null;
@@ -183,14 +183,14 @@ async function verifyTeacherPassword(env, password) {
 async function setTeacherPassword(env, newPassword) {
   const salt = uid();
   const hash = await hashPassword(newPassword, salt);
-  await env.CC_DATA.put("config:teacher_password", JSON.stringify({ salt, hash }));
+  await env.CCv4_DATA.put("config:teacher_password", JSON.stringify({ salt, hash }));
 }
 
 async function getSession(request, env) {
   const auth = request.headers.get("authorization") || "";
   const token = auth.replace(/^Bearer\s+/i, "").trim();
   if (!token) return null;
-  const raw = await env.CC_DATA.get(`session:${token}`);
+  const raw = await env.CCv4_DATA.get(`session:${token}`);
   if (!raw) return null;
   return { token, ...JSON.parse(raw) };
 }
@@ -231,28 +231,28 @@ function scanAllParts(parts) {
 
 // ---------- KV list helpers ----------
 async function pushIndex(env, key, id) {
-  const raw = await env.CC_DATA.get(key);
+  const raw = await env.CCv4_DATA.get(key);
   const arr = raw ? JSON.parse(raw) : [];
   arr.push(id);
-  await env.CC_DATA.put(key, JSON.stringify(arr));
+  await env.CCv4_DATA.put(key, JSON.stringify(arr));
 }
 
 async function removeFromIndex(env, key, id) {
-  const raw = await env.CC_DATA.get(key);
+  const raw = await env.CCv4_DATA.get(key);
   const arr = raw ? JSON.parse(raw) : [];
   const next = arr.filter((x) => x !== id);
-  await env.CC_DATA.put(key, JSON.stringify(next));
+  await env.CCv4_DATA.put(key, JSON.stringify(next));
 }
 
 async function ensureSeeded(env) {
-  const idx = await env.CC_DATA.get("topics_index");
+  const idx = await env.CCv4_DATA.get("topics_index");
   if (idx) return;
   const ids = [];
   for (const t of SEED_TOPICS) {
-    await env.CC_DATA.put(`topic:${t.id}`, JSON.stringify(t));
+    await env.CCv4_DATA.put(`topic:${t.id}`, JSON.stringify(t));
     ids.push(t.id);
   }
-  await env.CC_DATA.put("topics_index", JSON.stringify(ids));
+  await env.CCv4_DATA.put("topics_index", JSON.stringify(ids));
 }
 
 // ---------- Rubric fallback (no AI key configured) ----------
@@ -646,9 +646,9 @@ async function callWorkersAI(env, system, user) {
 
 // ---------- AI marking: Groq -> Gemini -> Workers AI -> rule-based (offline) ----------
 async function aiScore(env, topic, question, mode, data) {
-  const storedRubric = await env.CC_DATA.get("config:rubric");
+  const storedRubric = await env.CCv4_DATA.get("config:rubric");
   const rubricText = (storedRubric && storedRubric.trim()) || DEFAULT_RUBRIC;
-  const storedGroqModel = await env.CC_DATA.get("config:model_groq");
+  const storedGroqModel = await env.CCv4_DATA.get("config:model_groq");
   const groqModel = (storedGroqModel && storedGroqModel.trim()) || DEFAULT_GROQ_MODEL;
   const { system, user } = buildPrompts(topic, question, mode, data, rubricText);
 
@@ -710,7 +710,7 @@ export default {
         }
 
         const token = uid();
-        await env.CC_DATA.put(
+        await env.CCv4_DATA.put(
           `session:${token}`,
           JSON.stringify({ name, role: "pupil", createdAt: Date.now() }),
           { expirationTtl: 60 * 60 * 6 }
@@ -730,14 +730,14 @@ export default {
         const verdict = await verifyTeacherPassword(env, password);
         if (verdict.unset) {
           return json(
-            { error: "No teacher password has been set up yet. Ask an admin to run: wrangler kv:key put --binding=CC_DATA \"config:teacher_password\" \"yourPassword\"" },
+            { error: "No teacher password has been set up yet. Ask an admin to run: wrangler kv:key put --binding=CCv4_DATA \"config:teacher_password\" \"yourPassword\"" },
             500
           );
         }
         if (!verdict.ok) return json({ error: "Incorrect password." }, 403);
 
         const token = uid();
-        await env.CC_DATA.put(
+        await env.CCv4_DATA.put(
           `session:${token}`,
           JSON.stringify({ name: "Teacher", role: "teacher", createdAt: Date.now() }),
           { expirationTtl: 60 * 60 * 6 }
@@ -747,10 +747,10 @@ export default {
 
       // ---------- TOPICS ----------
       if (pathname === "/api/topics" && request.method === "GET") {
-        const idx = JSON.parse((await env.CC_DATA.get("topics_index")) || "[]");
+        const idx = JSON.parse((await env.CCv4_DATA.get("topics_index")) || "[]");
         const topics = [];
         for (const id of idx) {
-          const raw = await env.CC_DATA.get(`topic:${id}`);
+          const raw = await env.CCv4_DATA.get(`topic:${id}`);
           if (raw) topics.push(JSON.parse(raw));
         }
         return json({ topics });
@@ -769,7 +769,7 @@ export default {
           return badRequest("Expected a topic and exactly 3 answers.");
         }
 
-        const topicRaw = await env.CC_DATA.get(`topic:${topicId}`);
+        const topicRaw = await env.CCv4_DATA.get(`topic:${topicId}`);
         const topic = topicRaw ? JSON.parse(topicRaw) : null;
         const questions = (topic && topic.questions) || [];
 
@@ -846,19 +846,19 @@ export default {
           gradingDegraded: anyFallback,
           createdAt: Date.now(),
         };
-        await env.CC_DATA.put(`submission:${id}`, JSON.stringify(record));
+        await env.CCv4_DATA.put(`submission:${id}`, JSON.stringify(record));
         await pushIndex(env, "submissions_index", id);
 
         const countsForLeaderboard = !practice && !anyFallback;
         if (countsForLeaderboard) {
           // update pupil aggregate (leaderboard) - practice attempts, and
           // attempts marked entirely offline, never count
-          const pupilRaw = await env.CC_DATA.get(`pupil:${session.name}`);
+          const pupilRaw = await env.CCv4_DATA.get(`pupil:${session.name}`);
           const pupil = pupilRaw ? JSON.parse(pupilRaw) : { name: session.name, bestScore: 0, totalScore: 0, attempts: 0 };
           pupil.attempts += 1;
           pupil.totalScore += finalScore;
           pupil.bestScore = Math.max(pupil.bestScore, finalScore);
-          await env.CC_DATA.put(`pupil:${session.name}`, JSON.stringify(pupil));
+          await env.CCv4_DATA.put(`pupil:${session.name}`, JSON.stringify(pupil));
         }
 
         let warning = null;
@@ -880,7 +880,7 @@ export default {
         // the .workers.dev URL.
         const session = await getSession(request, env);
         if (!session) return json({ error: "Please log in first." }, 401);
-        const idx = JSON.parse((await env.CC_DATA.get("submissions_index")) || "[]");
+        const idx = JSON.parse((await env.CCv4_DATA.get("submissions_index")) || "[]");
         const pupilsSeen = new Map();
         // aggregate best score per pupil for a clean leaderboard
         const names = new Set();
@@ -888,14 +888,14 @@ export default {
         const listKeys = idx;
         const pupilNames = new Set();
         for (const subId of listKeys) {
-          const raw = await env.CC_DATA.get(`submission:${subId}`);
+          const raw = await env.CCv4_DATA.get(`submission:${subId}`);
           if (!raw) continue;
           const s = JSON.parse(raw);
           pupilNames.add(s.pupilName);
         }
         const board = [];
         for (const name of pupilNames) {
-          const raw = await env.CC_DATA.get(`pupil:${name}`);
+          const raw = await env.CCv4_DATA.get(`pupil:${name}`);
           if (raw) board.push(JSON.parse(raw));
         }
         board.sort((a, b) => b.bestScore - a.bestScore || b.totalScore - a.totalScore);
@@ -907,7 +907,7 @@ export default {
 
       if (pathname === "/api/teacher/submissions" && request.method === "GET") {
         if (!requireTeacher(session)) return json({ error: "Not authorised." }, 403);
-        const idx = JSON.parse((await env.CC_DATA.get("submissions_index")) || "[]");
+        const idx = JSON.parse((await env.CCv4_DATA.get("submissions_index")) || "[]");
         const total = idx.length;
         const limitParam = parseInt(url.searchParams.get("limit"), 10);
         const offsetParam = parseInt(url.searchParams.get("offset"), 10);
@@ -918,7 +918,7 @@ export default {
         const page = idx.slice().reverse().slice(offset, offset + limit);
         const items = [];
         for (const id of page) {
-          const raw = await env.CC_DATA.get(`submission:${id}`);
+          const raw = await env.CCv4_DATA.get(`submission:${id}`);
           if (raw) items.push(JSON.parse(raw));
         }
         return json({ submissions: items, total, offset, limit, hasMore: offset + limit < total });
@@ -926,7 +926,7 @@ export default {
 
       if (pathname === "/api/teacher/submissions/export" && request.method === "GET") {
         if (!requireTeacher(session)) return json({ error: "Not authorised." }, 403);
-        const idx = JSON.parse((await env.CC_DATA.get("submissions_index")) || "[]");
+        const idx = JSON.parse((await env.CCv4_DATA.get("submissions_index")) || "[]");
         const rows = [];
         rows.push(
           [
@@ -954,7 +954,7 @@ export default {
             .join(",")
         );
         for (const id of idx) {
-          const raw = await env.CC_DATA.get(`submission:${id}`);
+          const raw = await env.CCv4_DATA.get(`submission:${id}`);
           if (!raw) continue;
           const s = JSON.parse(raw);
           const rounds = s.rounds || [];
@@ -1004,7 +1004,7 @@ export default {
 
       if (pathname === "/api/teacher/rubric" && request.method === "GET") {
         if (!requireTeacher(session)) return json({ error: "Not authorised." }, 403);
-        const stored = await env.CC_DATA.get("config:rubric");
+        const stored = await env.CCv4_DATA.get("config:rubric");
         return json({ rubric: stored || DEFAULT_RUBRIC, isDefault: !stored });
       }
 
@@ -1013,16 +1013,16 @@ export default {
         const body = await request.json();
         const rubric = (body.rubric || "").trim();
         if (!rubric) {
-          await env.CC_DATA.delete("config:rubric"); // reset to default
+          await env.CCv4_DATA.delete("config:rubric"); // reset to default
           return json({ ok: true, rubric: DEFAULT_RUBRIC, isDefault: true });
         }
-        await env.CC_DATA.put("config:rubric", rubric);
+        await env.CCv4_DATA.put("config:rubric", rubric);
         return json({ ok: true, rubric, isDefault: false });
       }
 
       if (pathname === "/api/teacher/model-groq" && request.method === "GET") {
         if (!requireTeacher(session)) return json({ error: "Not authorised." }, 403);
-        const stored = await env.CC_DATA.get("config:model_groq");
+        const stored = await env.CCv4_DATA.get("config:model_groq");
         return json({ model: stored || DEFAULT_GROQ_MODEL, isDefault: !stored, options: GROQ_MODEL_OPTIONS });
       }
 
@@ -1031,17 +1031,17 @@ export default {
         const body = await request.json();
         const model = (body.model || "").trim();
         if (!model) {
-          await env.CC_DATA.delete("config:model_groq"); // reset to default
+          await env.CCv4_DATA.delete("config:model_groq"); // reset to default
           return json({ ok: true, model: DEFAULT_GROQ_MODEL, isDefault: true });
         }
-        await env.CC_DATA.put("config:model_groq", model);
+        await env.CCv4_DATA.put("config:model_groq", model);
         return json({ ok: true, model, isDefault: false });
       }
 
       if (pathname.startsWith("/api/teacher/submissions/") && request.method === "DELETE") {
         if (!requireTeacher(session)) return json({ error: "Not authorised." }, 403);
         const id = pathname.split("/").pop();
-        await env.CC_DATA.delete(`submission:${id}`);
+        await env.CCv4_DATA.delete(`submission:${id}`);
         await removeFromIndex(env, "submissions_index", id);
         return json({ ok: true });
       }
@@ -1049,12 +1049,12 @@ export default {
       if (pathname.startsWith("/api/teacher/submissions/") && request.method === "PUT") {
         if (!requireTeacher(session)) return json({ error: "Not authorised." }, 403);
         const id = pathname.split("/").pop();
-        const raw = await env.CC_DATA.get(`submission:${id}`);
+        const raw = await env.CCv4_DATA.get(`submission:${id}`);
         if (!raw) return json({ error: "Not found." }, 404);
         const existing = JSON.parse(raw);
         const body = await request.json();
         const updated = { ...existing, ...body, id };
-        await env.CC_DATA.put(`submission:${id}`, JSON.stringify(updated));
+        await env.CCv4_DATA.put(`submission:${id}`, JSON.stringify(updated));
         return json({ record: updated });
       }
 
@@ -1062,14 +1062,14 @@ export default {
         if (!requireTeacher(session)) return json({ error: "Not authorised." }, 403);
         const body = await request.json().catch(() => ({}));
         if (body.name) {
-          await env.CC_DATA.delete(`pupil:${body.name}`);
+          await env.CCv4_DATA.delete(`pupil:${body.name}`);
         } else {
-          const idx = JSON.parse((await env.CC_DATA.get("submissions_index")) || "[]");
+          const idx = JSON.parse((await env.CCv4_DATA.get("submissions_index")) || "[]");
           for (const id of idx) {
-            const raw = await env.CC_DATA.get(`submission:${id}`);
+            const raw = await env.CCv4_DATA.get(`submission:${id}`);
             if (!raw) continue;
             const s = JSON.parse(raw);
-            await env.CC_DATA.delete(`pupil:${s.pupilName}`);
+            await env.CCv4_DATA.delete(`pupil:${s.pupilName}`);
           }
         }
         return json({ ok: true });
@@ -1086,8 +1086,8 @@ export default {
           questions: Array.isArray(body.questions) ? body.questions.filter(Boolean) : [],
           tags: Array.isArray(body.tags) ? body.tags : [],
         };
-        const isNew = !(await env.CC_DATA.get(`topic:${id}`));
-        await env.CC_DATA.put(`topic:${id}`, JSON.stringify(topic));
+        const isNew = !(await env.CCv4_DATA.get(`topic:${id}`));
+        await env.CCv4_DATA.put(`topic:${id}`, JSON.stringify(topic));
         if (isNew) await pushIndex(env, "topics_index", id);
         return json({ topic });
       }
@@ -1095,7 +1095,7 @@ export default {
       if (pathname.startsWith("/api/teacher/topics/") && request.method === "DELETE") {
         if (!requireTeacher(session)) return json({ error: "Not authorised." }, 403);
         const id = pathname.split("/").pop();
-        await env.CC_DATA.delete(`topic:${id}`);
+        await env.CCv4_DATA.delete(`topic:${id}`);
         await removeFromIndex(env, "topics_index", id);
         return json({ ok: true });
       }
