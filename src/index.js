@@ -7,7 +7,7 @@
  *   config:rubric                  -> string (free-text marking rubric shown to the AI marker)
  *   config:model_groq              -> string (Groq model ID used by callGroq; defaults to DEFAULT_GROQ_MODEL if unset)
  *   session:<token>                -> { name, role, createdAt }
- *   topic:<id>                     -> { id, title, imageUrl, questions:[], tags:[] }   (needs 3 questions)
+ *   topic:<id>                     -> { id, title, imageUrl, questions:[], tags:[], coach:[] }   (needs 3 questions; coach has one entry per question: {starters:[], resources:[{title,url,type}]})
  *   topics_index                   -> [ id, id, ... ]
  *   submission:<id>                -> { id, pupilName, topicId, topicTitle, mode:"trees"|"single",
  *                                        rounds:[ {question, answer, score, max, breakdown, feedback, suggestion, flagged}, x3 ],
@@ -48,7 +48,7 @@ const GROQ_MODEL_OPTIONS = [
 const DEFAULT_RUBRIC = `TREES is marked out of 25 marks total, distributed as follows:
 - T Thought: 0-2 marks
 - R Reason: 0-3 marks
-- E Examples (from the picture/topic): 0-3 marks
+- E Evidence (from the picture/topic): 0-3 marks
 - E Experience: 0-15 marks (the most heavily weighted part)
 - S Suggestion: 0-2 marks
 
@@ -63,7 +63,7 @@ const DEFAULT_RUBRIC = `TREES is marked out of 25 marks total, distributed as fo
 2 = relevant reason but with limited explanation
 3 = clear, relevant reason with some elaboration
 
---- E Example from picture/topic to elaborate on the thoughts and/or reasons (0-3) ---
+--- E Evidence from picture/topic (0-3) ---
 0 = no reference to the picture or topic
 1 = mentions the picture vaguely
 2 = identifies a relevant detail from the picture or topic
@@ -124,6 +124,33 @@ function badRequest(msg) {
 
 function uid() {
   return crypto.randomUUID();
+}
+
+// ---------- NPC "Coach" content (sentence starters + teacher-set resources) ----------
+// One coach entry per question (3 total per topic). Resources are manually
+// set by the teacher via Teacher Tools -> Topics -> Coach fields - there is
+// no AI-generated link suggestion here on purpose (an LLM can hallucinate
+// plausible-looking article/video links that don't actually exist).
+function sanitizeCoach(raw) {
+  const entries = Array.isArray(raw) ? raw : [];
+  const out = [];
+  for (let i = 0; i < 3; i++) {
+    const e = entries[i] || {};
+    const starters = Array.isArray(e.starters) ? e.starters.map((s) => String(s || "").trim()).filter(Boolean).slice(0, 6) : [];
+    const resourcesRaw = Array.isArray(e.resources) ? e.resources : [];
+    const resources = [];
+    for (const r of resourcesRaw) {
+      const url = String((r && r.url) || "").trim();
+      if (!url) continue;
+      if (!/^https?:\/\//i.test(url)) continue; // never store a non-http(s) "link"
+      const type = r && r.type === "video" ? "video" : "article";
+      const title = String((r && r.title) || url).trim().slice(0, 200);
+      resources.push({ title, url, type });
+      if (resources.length >= 3) break;
+    }
+    out.push({ starters, resources });
+  }
+  return out;
 }
 
 // ---------- Password comparison / hashing ----------
@@ -259,7 +286,7 @@ async function ensureSeeded(env) {
 const TREES_ORDER = [
   ["T", "Thought", 2],
   ["R", "Reason", 3],
-  ["E1", "Example", 3],
+  ["E1", "Evidence", 3],
   ["E2", "Experience", 15],
   ["S", "Suggestion", 2],
 ];
@@ -291,7 +318,7 @@ const SEQUENCE_RE = /\b(at\s+first|then|after\s+that|in\s+the\s+end|finally|next
 
 const THOUGHT_RE = /\b(i think|in my opinion|i believe|i feel that)\b/i;
 const REASON_RE = /\bbecause\b/i;
-const EXAMPLE_RE = /\b(in the picture|i can see|the picture shows|this shows)\b/i;
+const EVIDENCE_RE = /\b(in the picture|i can see|the picture shows|this shows)\b/i;
 const SUGGESTION_RE = /\b(i suggest|should|could|in future|we can|in the future)\b/i;
 
 const STOPWORDS = new Set(["this", "that", "with", "from", "about", "your", "their", "which", "there", "would", "could", "should", "picture", "topic", "image"]);
@@ -364,7 +391,7 @@ function ruleBasedScoreTrees(parts, keywords) {
     }
 
     // Each part now needs content matching what it's actually meant to contain
-    // (a thought, a reason, example, a suggestion) - word count alone is only
+    // (a thought, a reason, evidence, a suggestion) - word count alone is only
     // ever enough for partial credit, never full marks.
     let pts = 0;
     if (key === "T") {
@@ -373,7 +400,7 @@ function ruleBasedScoreTrees(parts, keywords) {
       pts = REASON_RE.test(text) && words >= 8 ? max : REASON_RE.test(text) ? Math.min(max, 2) : words >= 10 ? Math.min(max, 1) : 0;
     } else if (key === "E1") {
       const onTopic = mentionsTopic(text, keywords);
-      pts = EXAMPLE_RE.test(text) && onTopic ? max : EXAMPLE_RE.test(text) || onTopic ? Math.min(max, 2) : words >= 5 ? Math.min(max, 1) : 0;
+      pts = EVIDENCE_RE.test(text) && onTopic ? max : EVIDENCE_RE.test(text) || onTopic ? Math.min(max, 2) : words >= 5 ? Math.min(max, 1) : 0;
     } else {
       pts = SUGGESTION_RE.test(text) && words >= 5 ? max : SUGGESTION_RE.test(text) ? Math.min(max, 1) : 0;
     }
@@ -407,10 +434,10 @@ function ruleBasedScoreSingle(text, keywords) {
       });
       continue;
     }
-    const re = key === "T" ? THOUGHT_RE : key === "R" ? REASON_RE : key === "E1" ? EXAMPLE_RE : SUGGESTION_RE;
+    const re = key === "T" ? THOUGHT_RE : key === "R" ? REASON_RE : key === "E1" ? EVIDENCE_RE : SUGGESTION_RE;
     let pts = 0;
     if (key === "E1") {
-      // example in a combined answer should also actually reference the topic
+      // evidence in a combined answer should also actually reference the topic
       pts = re.test(text) && onTopic ? max : re.test(text) || onTopic ? Math.min(max, 2) : 0;
     } else if (re.test(text)) {
       pts = max;
@@ -507,10 +534,10 @@ function normalizeAiResult(raw, markedBy) {
 function buildPrompts(topic, question, mode, data, rubricText) {
   const modeInstruction =
     mode === "single"
-      ? `The pupil's answer below is ONE continuous piece of spoken text - it is NOT split into labelled parts. Read it carefully and identify each TREES component (Thought, Reason, Example, Experience, Suggestion) wherever it appears in the text, even if the pupil blends parts together or states them out of order, then mark each part using the same rubric. If a component is genuinely absent from their answer, score that part 0.`
+      ? `The pupil's answer below is ONE continuous piece of spoken text - it is NOT split into labelled parts. Read it carefully and identify each TREES component (Thought, Reason, Evidence, Experience, Suggestion) wherever it appears in the text, even if the pupil blends parts together or states them out of order, then mark each part using the same rubric. If a component is genuinely absent from their answer, score that part 0.`
       : `The pupil's answer below IS already split into 5 labelled parts. Mark each part as given.`;
 
-  const system = `You are a supportive but honest Primary School English oral examiner in Singapore, marking a pupil's spoken response using the TREES framework (Thought, Reason, Example, Experience, Suggestion).
+  const system = `You are a supportive but honest Primary School English oral examiner in Singapore, marking a pupil's spoken response using the TREES framework (Thought, Reason, Evidence, Experience, Suggestion).
 
 Marking rubric (set by the teacher), out of 25 marks total:
 ${rubricText}
@@ -525,7 +552,7 @@ Respond with ONLY valid JSON, no markdown fences, no preamble, no explanation be
   "breakdown": [
     { "part": "Thought", "points": 0, "max": 2, "note": "short comment, max 25 words" },
     { "part": "Reason", "points": 0, "max": 3, "note": "short comment, max 25 words" },
-    { "part": "Example", "points": 0, "max": 3, "note": "short comment, max 25 words" },
+    { "part": "Evidence", "points": 0, "max": 3, "note": "short comment, max 25 words" },
     { "part": "Experience", "points": 0, "max": 15, "note": "short comment, max 25 words",
       "subBreakdown": [
         { "label": "Relevance", "points": 0, "max": 2 },
@@ -763,6 +790,11 @@ export default {
 
         const body = await request.json();
         const { topicId, answers } = body;
+        // Which questions the pupil opened the NPC Coach for, before
+        // submitting (see /api/topics coach content). This is recorded for
+        // the teacher but deliberately never told to the pupil - see
+        // requireTeacher-gated endpoints for where it's surfaced.
+        const coachUsedIn = Array.isArray(body.coachUsed) ? body.coachUsed : [];
         const mode = body.mode === "single" ? "single" : "trees";
         const practice = !!body.practice;
         if (!topicId || !Array.isArray(answers) || answers.length !== 3) {
@@ -821,6 +853,9 @@ export default {
             suggestion: result.suggestion,
             flagged: ri.anyFlag,
             markedBy: result.markedBy,
+            // teacher-only - stripped out of the response sent back to the
+            // pupil below, and never mentioned in the pupil-facing UI
+            coachUsed: !!coachUsedIn[i],
           };
         });
 
@@ -870,7 +905,18 @@ export default {
           warning = "AI marking wasn't available for at least one question, so this attempt was scored with a simple offline check and won't count on the leaderboard.";
         }
 
-        return json({ record, warning });
+        // `record` (with coachUsed per round) is what's stored in KV and
+        // shown to the teacher. The pupil only ever sees `pupilRecord`,
+        // which has coachUsed stripped out - pupils are not told that
+        // opening the NPC Coach is tracked.
+        const pupilRecord = {
+          ...record,
+          rounds: record.rounds.map((r) => {
+            const { coachUsed, ...rest } = r;
+            return rest;
+          }),
+        };
+        return json({ record: pupilRecord, warning });
       }
 
       // ---------- LEADERBOARD ----------
@@ -943,12 +989,15 @@ export default {
             "Q1_question",
             "Q1_answer",
             "Q1_score",
+            "Q1_coachUsed",
             "Q2_question",
             "Q2_answer",
             "Q2_score",
+            "Q2_coachUsed",
             "Q3_question",
             "Q3_answer",
             "Q3_score",
+            "Q3_coachUsed",
           ]
             .map(csvEscape)
             .join(",")
@@ -962,7 +1011,7 @@ export default {
           for (let i = 0; i < 3; i++) {
             const r = rounds[i];
             if (!r) {
-              roundCols.push("", "", "");
+              roundCols.push("", "", "", "");
               continue;
             }
             const answerText =
@@ -971,7 +1020,7 @@ export default {
                 : ["T", "R", "E1", "E2", "S"]
                     .map((k) => (r.answer && r.answer.parts && r.answer.parts[k]) || "")
                     .join(" | ");
-            roundCols.push(r.question || "", answerText, r.score);
+            roundCols.push(r.question || "", answerText, r.score, r.coachUsed ? "yes" : "no");
           }
           rows.push(
             [
@@ -1085,6 +1134,7 @@ export default {
           imageUrl: (body.imageUrl || "").trim(),
           questions: Array.isArray(body.questions) ? body.questions.filter(Boolean) : [],
           tags: Array.isArray(body.tags) ? body.tags : [],
+          coach: sanitizeCoach(body.coach),
         };
         const isNew = !(await env.CCv4_DATA.get(`topic:${id}`));
         await env.CCv4_DATA.put(`topic:${id}`, JSON.stringify(topic));
