@@ -9,6 +9,22 @@ export const SEED_TOPICS = [
       "Tell me about a time when you helped to keep a place clean.",
     ],
     tags: ["responsibility", "environment", "school life"],
+    coach: [
+      {
+        starters: ["In the picture, I can see...", "It looks like the students are..."],
+        resources: [],
+      },
+      {
+        starters: ["A clean school matters because...", "If we don't keep the school clean, ..."],
+        resources: [
+          { title: "Lil' but Mighty - PSLE Oral Vocabulary by Topic (hygiene & cleanliness)", url: "https://lilbutmightyenglish.com/blog/psle-oral-vocabulary-by-topic/", type: "article" },
+        ],
+      },
+      {
+        starters: ["One time, I helped to clean...", "I remember when our class..."],
+        resources: [],
+      },
+    ],
   },
   {
     id: "healthy-eating",
@@ -20,6 +36,22 @@ export const SEED_TOPICS = [
       "Tell me about a time you made a healthy or unhealthy food choice.",
     ],
     tags: ["health", "habits"],
+    coach: [
+      {
+        starters: ["In the picture, I can see...", "The food on the table looks..."],
+        resources: [],
+      },
+      {
+        starters: ["Eating healthily is important because...", "A balanced diet helps us to..."],
+        resources: [
+          { title: "Learning Journey - PSLE Oral SBC Tips 2026 (recurring themes incl. healthy eating)", url: "https://www.learningjourney.edu.sg/2026/07/29/psle-oral-stimulus-based-conversation-tips-2026/", type: "article" },
+        ],
+      },
+      {
+        starters: ["One time, I chose to eat...", "I remember feeling... after I ate..."],
+        resources: [],
+      },
+    ],
   },
   {
     id: "helping-the-elderly",
@@ -31,6 +63,22 @@ export const SEED_TOPICS = [
       "Share a time when you helped or saw someone help an elderly person.",
     ],
     tags: ["kindness", "community"],
+    coach: [
+      {
+        starters: ["In the picture, I can see...", "The elderly person seems to be..."],
+        resources: [],
+      },
+      {
+        starters: ["We should help the elderly because...", "Showing respect to elderly people matters as..."],
+        resources: [
+          { title: "AGrader - PSLE Oral Top Tips for the Stimulus-Based Conversation (OREO framework)", url: "https://www.agrader.sg/post/psle-oral-top-tips-for-the-stimulus-based-conversation", type: "article" },
+        ],
+      },
+      {
+        starters: ["One time, I helped an elderly person by...", "I once saw someone..."],
+        resources: [],
+      },
+    ],
   },
   {
     id: "public-transport",
@@ -42,6 +90,22 @@ export const SEED_TOPICS = [
       "Tell me about an experience you had on a bus or train.",
     ],
     tags: ["consideration", "community"],
+    coach: [
+      {
+        starters: ["In the picture, I notice...", "The passengers seem to be..."],
+        resources: [],
+      },
+      {
+        starters: ["Being considerate on public transport is important because...", "If passengers are not considerate, ..."],
+        resources: [
+          { title: "illum.education - Complete Guide to PSLE Oral SBC (PEEL framework)", url: "https://illum.education/psle-stimulus-based-conversation/", type: "article" },
+        ],
+      },
+      {
+        starters: ["One time, on the bus/train, I...", "I remember an experience where..."],
+        resources: [],
+      },
+    ],
   },
   {
     id: "recycling",
@@ -53,6 +117,22 @@ export const SEED_TOPICS = [
       "Tell me about a time you recycled something, or a time you forgot to.",
     ],
     tags: ["environment", "responsibility"],
+    coach: [
+      {
+        starters: ["In the picture, I can see...", "It looks like the person is sorting..."],
+        resources: [
+          { title: "Lil' but Mighty - Earth Hour: Oral Topic (environment vocabulary)", url: "https://lilbutmightyenglish.com/blog/earth-hour-oral-topic/", type: "article" },
+        ],
+      },
+      {
+        starters: ["Recycling matters because...", "If we don't recycle, ..."],
+        resources: [],
+      },
+      {
+        starters: ["One time, I recycled...", "I remember forgetting to recycle when..."],
+        resources: [],
+      },
+    ],
   },
   {
     id: "mobile-phone-use",
@@ -64,6 +144,22 @@ export const SEED_TOPICS = [
       "Tell me about a time your phone use affected you or someone else.",
     ],
     tags: ["technology", "balance"],
+    coach: [
+      {
+        starters: ["In the picture, I can see...", "It looks like the person is using their phone to..."],
+        resources: [],
+      },
+      {
+        starters: ["Mobile phones are useful because...", "However, mobile phones can also be risky as..."],
+        resources: [
+          { title: "doappliedlearning.com.sg - Stimulus-Based Conversation In PSLE Exams", url: "https://doappliedlearning.com.sg/blogs/stimulus-based-conversation/", type: "article" },
+        ],
+      },
+      {
+        starters: ["One time, my phone use...", "I remember when my screen time..."],
+        resources: [],
+      },
+    ],
   },
   {
     id: "road-safety",
@@ -75,6 +171,22 @@ export const SEED_TOPICS = [
       "Share an experience where road safety mattered to you.",
     ],
     tags: ["safety"],
+    coach: [
+      {
+        starters: ["In the picture, I can see...", "It looks like the pedestrian/driver is..."],
+        resources: [],
+      },
+      {
+        starters: ["We must follow road safety rules because...", "Without road safety rules, ..."],
+        resources: [
+          { title: "Lil' but Mighty - PSLE Oral Vocabulary by Topic (road safety)", url: "https://lilbutmightyenglish.com/blog/psle-oral-vocabulary-by-topic/", type: "article" },
+        ],
+      },
+      {
+        starters: ["One time, while crossing the road, I...", "I remember an experience where road safety..."],
+        resources: [],
+      },
+    ],
   },
   {
     id: "hawker-centre",
@@ -86,6 +198,22 @@ export const SEED_TOPICS = [
       "Tell me about a memorable visit to a hawker centre.",
     ],
     tags: ["culture", "community"],
+    coach: [
+      {
+        starters: ["In the picture, I can see...", "The hawker centre looks..."],
+        resources: [
+          { title: "Learning Journey - PSLE Oral SBC Tips 2026 (recurring themes incl. hawker centres)", url: "https://www.learningjourney.edu.sg/2026/07/29/psle-oral-stimulus-based-conversation-tips-2026/", type: "article" },
+        ],
+      },
+      {
+        starters: ["Hawker centres are important because...", "They bring people together as..."],
+        resources: [],
+      },
+      {
+        starters: ["One time, at a hawker centre, I...", "I remember a visit where..."],
+        resources: [],
+      },
+    ],
   },
   {
     id: "sports-participation",
@@ -97,6 +225,22 @@ export const SEED_TOPICS = [
       "Tell me about a time you took part in a sport or game.",
     ],
     tags: ["health", "teamwork"],
+    coach: [
+      {
+        starters: ["In the picture, I can see...", "The players seem to be..."],
+        resources: [],
+      },
+      {
+        starters: ["Taking part in sports is important because...", "Physical activity helps pupils to..."],
+        resources: [],
+      },
+      {
+        starters: ["One time, I took part in...", "I remember a game/match where..."],
+        resources: [
+          { title: "3 Tips On How To Prepare For Primary School Oral | Stimulus-Based Conversation", url: "https://www.youtube.com/watch?v=tP4LsjuyDcg", type: "video" },
+        ],
+      },
+    ],
   },
   {
     id: "racial-harmony",
@@ -108,6 +252,22 @@ export const SEED_TOPICS = [
       "Share an experience of celebrating a festival with friends of a different race.",
     ],
     tags: ["culture", "harmony"],
+    coach: [
+      {
+        starters: ["In the picture, I notice...", "The people seem to be celebrating..."],
+        resources: [],
+      },
+      {
+        starters: ["Racial harmony is important because...", "Living in a multiracial society means..."],
+        resources: [
+          { title: "Thinking Factory - 6 PSLE Oral Tips (TREES approach)", url: "https://thinking-factory.com/primary-english-tuition/p6/psle-paper-4/6-psle-oral-tips/", type: "article" },
+        ],
+      },
+      {
+        starters: ["One time, I celebrated a festival with...", "I remember learning about a different culture when..."],
+        resources: [],
+      },
+    ],
   },
   {
     id: "caring-for-animals",
@@ -119,6 +279,22 @@ export const SEED_TOPICS = [
       "Tell me about a time you cared for or encountered an animal.",
     ],
     tags: ["kindness", "responsibility"],
+    coach: [
+      {
+        starters: ["In the picture, I can see...", "It looks like the person is caring for..."],
+        resources: [],
+      },
+      {
+        starters: ["We should care for animals because...", "Animals deserve kindness as..."],
+        resources: [
+          { title: "Lil' but Mighty - PSLE Oral Vocabulary by Topic (positive values & habits)", url: "https://lilbutmightyenglish.com/blog/psle-oral-vocabulary-by-topic/", type: "article" },
+        ],
+      },
+      {
+        starters: ["One time, I cared for an animal by...", "I remember encountering an animal when..."],
+        resources: [],
+      },
+    ],
   },
   {
     id: "studying-with-friends",
@@ -130,5 +306,22 @@ export const SEED_TOPICS = [
       "Tell me about a time you studied or worked on a project with friends.",
     ],
     tags: ["teamwork", "school life"],
+    coach: [
+      {
+        starters: ["In the picture, I can see...", "The students seem to be..."],
+        resources: [],
+      },
+      {
+        starters: ["Studying with friends helps because...", "Working together allows us to..."],
+        resources: [
+          { title: "How to Ace the Stimulus-based Conversation Component: 3 Strategies That Work", url: "https://www.youtube.com/watch?v=zcKl7vXuWWc", type: "video" },
+        ],
+      },
+      {
+        starters: ["One time, my friends and I studied/worked on...", "I remember a project where..."],
+        resources: [],
+      },
+    ],
   },
 ];
+
