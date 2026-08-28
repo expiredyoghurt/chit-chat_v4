@@ -6,23 +6,31 @@
  *   config:teacher_password        -> string
  *   config:rubric                  -> string (free-text marking rubric shown to the AI marker)
  *   config:model_groq              -> string (Groq model ID used by callGroq; defaults to DEFAULT_GROQ_MODEL if unset)
- *   session:<token>                -> { name, role, createdAt }
- *   topic:<id>                     -> { id, title, imageUrl, questions:[], tags:[], coach:[] }   (needs 3 questions; coach has one entry per question: {starters:[], resources:[{title,url,type}]})
+ *   session:<token>                -> { name, pupilClass, role, createdAt }
+ *   topic:<id>                     -> { id, title, imageUrl, imageDescription, questions:[], tags:[], coach:[] }   (needs 3 questions; imageDescription is an optional teacher-written fallback used by the AI marker when it can't fetch/see the actual picture; coach has one entry per question: {starters:[], resources:[{title,url,type}]})
  *   topics_index                   -> [ id, id, ... ]
- *   submission:<id>                -> { id, pupilName, topicId, topicTitle, mode:"trees"|"single",
- *                                        rounds:[ {question, answer, score, max, breakdown, feedback, suggestion, flagged}, x3 ],
- *                                        finalScore, maxScore:25, practice, createdAt }
+ *   submission:<id>                -> { id, pupilName, pupilClass, topicId, topicTitle, mode:"trees"|"single",
+ *                                        rounds:[ {question, answer, score, max, breakdown, feedback, suggestion, modelAnswer, flagged, markedBy, coachUsed}, x3 ],
+ *                                        finalScore, maxScore:30, practice, gradingDegraded, createdAt }
  *   submissions_index              -> [ id, id, ... ]   (newest last)
- *   pupil:<name>                   -> { name, bestScore, totalScore, attempts }   (practice attempts are NOT added here; scores are the finalScore average, out of 25)
+ *   pupil:<class>:<name>           -> { name, pupilClass, bestScore, totalScore, attempts }   (practice/degraded attempts are NOT added here; scores are the finalScore average, out of 30)
+ *   pupil:<class>:<name>:history   -> [ {timestamp, topicId, topicTitle, finalScore, maxScore, breakdown}, ... ]   (capped rolling log, most recent PUPIL_HISTORY_CAP attempts; used for the teacher's per-pupil strengths/concerns view)
  *
  * Secrets / bindings
- *   env.GROQ_API_KEY        1st AI marker, wrangler secret put GROQ_API_KEY (console.groq.com)
- *   env.GEMINI_API_KEY      2nd AI marker, wrangler secret put GEMINI_API_KEY (aistudio.google.com/apikey)
+ *   env.GROQ_API_KEY        2nd AI marker, wrangler secret put GROQ_API_KEY (console.groq.com)
+ *   env.GEMINI_API_KEY      1st AI marker (vision-capable), wrangler secret put GEMINI_API_KEY (aistudio.google.com/apikey)
  *   env.AI                  3rd AI marker, Cloudflare Workers AI (free, [ai] binding in wrangler.toml)
- *   Marking chain: Groq -> Gemini -> Workers AI -> offline rule-based scorer.
- *   Each provider is tried in order and skipped (not retried) if its key/binding
- *   is missing or the call fails, falling through to the next. If all three AI
- *   providers are unavailable, marking falls back to the offline scorer.
+ *   Marking chain: Gemini -> Groq -> Workers AI -> offline rule-based scorer.
+ *   Gemini is tried first because it's the only vision-capable provider here -
+ *   it's sent the actual topic picture (fetched + base64-encoded server-side)
+ *   so the Evidence (E1) part can be checked against what's really in the
+ *   picture, not just judged on plausibility. Groq and Workers AI are
+ *   text-only and instead use the teacher's optional imageDescription field
+ *   (or, failing that, are told plainly they can't see the picture and to
+ *   mark E1 on plausibility only). Each provider is tried in order and
+ *   skipped (not retried) if its key/binding is missing or the call fails,
+ *   falling through to the next. If all three AI providers are unavailable,
+ *   marking falls back to the offline scorer.
  */
 
 import { VULGAR_WORDS } from "./vulgarity-list.js";
@@ -45,12 +53,14 @@ const GROQ_MODEL_OPTIONS = [
   { id: "qwen/qwen3.6-27b", label: "Qwen3.6 27B" },
 ];
 
-const DEFAULT_RUBRIC = `TREES is marked out of 25 marks total, distributed as follows:
+const DEFAULT_RUBRIC = `TREES is marked out of 25 marks, plus a separate Language Use
+component out of 5 marks (30 marks total), distributed as follows:
 - T Thought: 0-2 marks
 - R Reason: 0-3 marks
 - E Evidence (from the picture/topic): 0-3 marks
 - E Experience: 0-15 marks (the most heavily weighted part)
 - S Suggestion: 0-2 marks
+- Language Use (Grammar, Vocabulary, Fluency & Delivery): 0-5 marks - see below
 
 --- T Thought (0-2) ---
 0 = no clear thought given
@@ -101,7 +111,26 @@ and sum them for the Experience total:
 --- S Suggestion (0-2) ---
 0 = no suggestion given
 1 = simple or vague suggestion
-2 = practical, relevant suggestion (ideally: who/what should do something + why it helps)`;
+2 = practical, relevant suggestion (ideally: who/what should do something + why it helps)
+
+--- Language Use (0-5 total, separate from TREES content above) ---
+Judge this ONLY from the pupil's actual grammar, word choice, and delivery -
+not from how good their ideas or experience are. A pupil with a weak
+experience but strong grammar should still score well here, and vice versa.
+
+1. Grammar Accuracy (0-2)
+   0 = frequent errors that make meaning hard to follow
+   1 = some errors (tense, subject-verb agreement, articles) but meaning is clear
+   2 = largely accurate grammar throughout
+
+2. Vocabulary Range & Appropriateness (0-2)
+   0 = very basic, repetitive vocabulary
+   1 = adequate vocabulary for the topic
+   2 = varied, precise, topic-appropriate vocabulary used naturally
+
+3. Fluency & Delivery (0-1)
+   0 = frequent filler words (um/uh/like) or halting, hard-to-follow delivery
+   1 = mostly smooth delivery with minimal filler words`;
 
 function csvEscape(val) {
   const s = val === undefined || val === null ? "" : String(val);
@@ -131,6 +160,76 @@ function uid() {
 // set by the teacher via Teacher Tools -> Topics -> Coach fields - there is
 // no AI-generated link suggestion here on purpose (an LLM can hallucinate
 // plausible-looking article/video links that don't actually exist).
+// ---------- Pupil tracking by name@class (v6) ----------
+// KV keys use sanitized (colon-stripped) name/class segments so they parse
+// unambiguously as pupil:<class>:<name> / pupil:<class>:<name>:history -
+// display always uses the original session.name/session.pupilClass, this is
+// only for the key itself.
+function kvSafe(s) {
+  return String(s || "").replace(/:/g, "").trim() || "unknown";
+}
+function pupilKey(pupilClass, name) {
+  return `pupil:${kvSafe(pupilClass)}:${kvSafe(name)}`;
+}
+function pupilHistoryKey(pupilClass, name) {
+  return `pupil:${kvSafe(pupilClass)}:${kvSafe(name)}:history`;
+}
+
+const PUPIL_HISTORY_CAP = 50; // rolling window - old attempts drop off rather than growing the KV value forever
+
+async function pushPupilHistory(env, pupilClass, name, entry) {
+  const key = pupilHistoryKey(pupilClass, name);
+  const raw = await env.CCv4_DATA.get(key);
+  const history = raw ? JSON.parse(raw) : [];
+  history.push(entry);
+  while (history.length > PUPIL_HISTORY_CAP) history.shift();
+  await env.CCv4_DATA.put(key, JSON.stringify(history));
+  return history;
+}
+
+// Averages each breakdown criterion (Thought, Reason, ..., Fluency & Delivery)
+// across a submission's 3 rounds, so one attempt collapses to one compact
+// history entry instead of 3 full round breakdowns.
+function averageRoundBreakdown(rounds) {
+  const sums = {};
+  const maxes = {};
+  for (const r of rounds) {
+    for (const b of r.breakdown || []) {
+      sums[b.part] = (sums[b.part] || 0) + b.points;
+      maxes[b.part] = b.max;
+    }
+  }
+  return Object.keys(sums).map((part) => ({
+    part,
+    points: Math.round((sums[part] / rounds.length) * 10) / 10,
+    max: maxes[part],
+  }));
+}
+
+// Rolls a pupil's history into per-criterion averages, then flags the
+// weakest as "areas to grow" and strongest as "strengths" - purely
+// arithmetic on already-stored scores, no AI call needed.
+function computeStrengthsConcerns(history) {
+  if (!history || !history.length) return { strengths: [], concerns: [], rows: [] };
+  const totals = {};
+  for (const h of history) {
+    for (const b of h.breakdown || []) {
+      if (!totals[b.part]) totals[b.part] = { sum: 0, max: b.max, n: 0 };
+      totals[b.part].sum += b.points;
+      totals[b.part].n += 1;
+    }
+  }
+  const rows = Object.keys(totals).map((part) => {
+    const t = totals[part];
+    const avg = t.n > 0 ? t.sum / t.n : 0;
+    return { part, avg: Math.round(avg * 10) / 10, max: t.max, pct: t.max > 0 ? avg / t.max : 0 };
+  });
+  const sorted = [...rows].sort((a, b) => a.pct - b.pct);
+  const concerns = sorted.slice(0, 2).map((r) => r.part);
+  const strengths = [...sorted].reverse().slice(0, 2).map((r) => r.part);
+  return { strengths, concerns, rows };
+}
+
 function sanitizeCoach(raw) {
   const entries = Array.isArray(raw) ? raw : [];
   const out = [];
@@ -300,6 +399,32 @@ const EXPERIENCE_SUB = [
   ["Reflection / Lesson Learnt", 2],
 ];
 
+// ---------- Language Use (new in v6) - additive to TREES, not part of it ----------
+// Modeled on (not copied from) the real PSLE oral exam's separate weighting
+// of content vs language. Kept as its own small block so a teacher can see
+// exactly which part of the mark is about WHAT was said vs HOW it was said.
+const LANGUAGE_ORDER = [
+  ["Grammar", "Grammar Accuracy", 2],
+  ["Vocabulary", "Vocabulary Range & Appropriateness", 2],
+  ["Fluency", "Fluency & Delivery", 1],
+];
+const LANGUAGE_MAX_TOTAL = LANGUAGE_ORDER.reduce((sum, [, , max]) => sum + max, 0); // 5
+const FULL_MAX_TOTAL = TREES_MAX_TOTAL + LANGUAGE_MAX_TOTAL; // 30
+
+// Filler words / disfluency markers, used to inform the Fluency sub-score.
+// NOTE: the transcript comes from the browser's Web Speech API, which is
+// known to smooth over or drop disfluencies rather than transcribe them
+// faithfully - this is a best-effort signal, not a precise measurement.
+const FILLER_RE = /\b(um+|uh+|erm+|ah+|hmm+|like|you know)\b/gi;
+function countFillers(text) {
+  const words = (text || "").trim().split(/\s+/).filter(Boolean);
+  const totalWords = words.length;
+  const matches = (text || "").match(FILLER_RE) || [];
+  const count = matches.length;
+  const density = totalWords > 0 ? count / totalWords : 0;
+  return { count, totalWords, density };
+}
+
 // crude 5W1H / authenticity heuristics used only when no AI key is configured.
 // These are deliberately strict: a pupil who just writes a lot of words with
 // no real content should NOT score well offline, since this scorer has no
@@ -368,6 +493,48 @@ function scoreExperienceFallback(text, keywords) {
 
   const total = Object.values(sub).reduce((a, b) => a + b, 0);
   return { total: Math.min(15, total), sub };
+}
+
+// ---------- Language Use fallback (no AI key configured) ----------
+// Crude, deterministic proxies only - never claims to be real grammar/vocab
+// assessment, and says so in its own notes. Grammar uses basic punctuation/
+// sentence-length signals; Vocabulary uses type-token ratio (distinct words
+// / total words), a standard rough lexical-diversity measure; Fluency uses
+// the filler-word density computed by countFillers().
+function scoreLanguageFallback(text, fillerStats) {
+  const trimmed = (text || "").trim();
+  const words = trimmed ? trimmed.split(/\s+/).filter(Boolean) : [];
+  const wordCount = words.length;
+  const breakdown = [];
+
+  const startsCapital = /^[A-Z]/.test(trimmed);
+  const endsWithPunct = /[.!?]$/.test(trimmed);
+  const sentenceCount = (trimmed.match(/[.!?]+/g) || []).length;
+  const avgSentenceLen = sentenceCount > 0 ? wordCount / sentenceCount : wordCount;
+  const grammarPts =
+    wordCount >= 15 && startsCapital && endsWithPunct && avgSentenceLen <= 35
+      ? 2
+      : wordCount >= 8 && (startsCapital || endsWithPunct)
+      ? 1
+      : 0;
+  breakdown.push({ part: "Grammar Accuracy", points: grammarPts, max: 2, note: "Estimated from punctuation and sentence-length patterns - not real grammar checking." });
+
+  const lowerWords = words.map((w) => w.toLowerCase().replace(/[^a-z']/g, "")).filter(Boolean);
+  const uniqueWords = new Set(lowerWords);
+  const ttr = lowerWords.length > 0 ? uniqueWords.size / lowerWords.length : 0;
+  const vocabPts = wordCount >= 15 && ttr >= 0.6 ? 2 : wordCount >= 5 && ttr >= 0.45 ? 1 : 0;
+  breakdown.push({ part: "Vocabulary Range & Appropriateness", points: vocabPts, max: 2, note: "Estimated from word variety (distinct vs repeated words) - not real vocabulary assessment." });
+
+  const fluencyPts = wordCount >= 5 && fillerStats.density < 0.05 ? 1 : 0;
+  breakdown.push({
+    part: "Fluency & Delivery",
+    points: fluencyPts,
+    max: 1,
+    note: fillerStats.count > 0 ? `${fillerStats.count} filler word(s) detected (um/uh/like/etc.).` : "No filler words detected.",
+  });
+
+  const total = breakdown.reduce((sum, b) => sum + b.points, 0);
+  return { total, breakdown };
 }
 
 function ruleBasedScoreTrees(parts, keywords) {
@@ -456,16 +623,20 @@ function ruleBasedScoreSingle(text, keywords) {
   return { total, breakdown };
 }
 
-function ruleBasedScore(mode, data, topic) {
+function ruleBasedScore(mode, data, topic, fillerStats) {
   const keywords = topicKeywords(topic);
-  const result = mode === "single" ? ruleBasedScoreSingle(data.text, keywords) : ruleBasedScoreTrees(data.parts, keywords);
+  const contentResult = mode === "single" ? ruleBasedScoreSingle(data.text, keywords) : ruleBasedScoreTrees(data.parts, keywords);
+  const combinedText = mode === "single" ? data.text || "" : TREES_ORDER.map(([key]) => data.parts[key] || "").join(" ");
+  const fillers = fillerStats || countFillers(combinedText);
+  const lang = scoreLanguageFallback(combinedText, fillers);
   return {
-    total: result.total,
-    max: TREES_MAX_TOTAL,
-    breakdown: result.breakdown,
+    total: contentResult.total + lang.total,
+    max: FULL_MAX_TOTAL,
+    breakdown: [...contentResult.breakdown, ...lang.breakdown],
     feedback:
-      "Automatic marking (no AI marker configured): scored with simple keyword/relevance checks, not real understanding. Ask your teacher to add an AI key for accurate marking.",
+      "Automatic marking (no AI marker configured): scored with simple keyword/relevance/grammar-pattern checks, not real understanding. Ask your teacher to add an AI key for accurate marking.",
     suggestion: "Try adding a specific personal experience with who, what, when, where, why and how it ended, plus how you felt.",
+    modelAnswer: "",
   };
 }
 
@@ -521,32 +692,71 @@ function normalizeAiResult(raw, markedBy) {
       note: typeof part.note === "string" ? part.note.slice(0, 300) : "",
     });
   }
+  for (const [, label, max] of LANGUAGE_ORDER) {
+    const part = rawBreakdown.find((b) => b && b.part === label) || {};
+    const pts = clampNumber(part.points, 0, max);
+    total += pts;
+    normalized.push({
+      part: label,
+      points: pts,
+      max,
+      note: typeof part.note === "string" ? part.note.slice(0, 300) : "",
+    });
+  }
   return {
     total,
-    max: TREES_MAX_TOTAL,
+    max: FULL_MAX_TOTAL,
     breakdown: normalized,
     feedback: typeof raw.feedback === "string" && raw.feedback.trim() ? raw.feedback.slice(0, 600) : "Marked - see the breakdown below for details.",
     suggestion: typeof raw.suggestion === "string" ? raw.suggestion.slice(0, 300) : "",
+    modelAnswer: typeof raw.modelAnswer === "string" && raw.modelAnswer.trim() ? raw.modelAnswer.trim().slice(0, 900) : "",
     markedBy,
   };
 }
 
-function buildPrompts(topic, question, mode, data, rubricText) {
+function buildPrompts(topic, question, mode, data, rubricText, opts) {
+  opts = opts || {};
+  const imageAttached = !!opts.imageAttached;
+  const imageDescription = (opts.imageDescription || "").trim();
+  const fillerStats = opts.fillerStats || { count: 0, totalWords: 0, density: 0 };
+
   const modeInstruction =
     mode === "single"
       ? `The pupil's answer below is ONE continuous piece of spoken text - it is NOT split into labelled parts. Read it carefully and identify each TREES component (Thought, Reason, Evidence, Experience, Suggestion) wherever it appears in the text, even if the pupil blends parts together or states them out of order, then mark each part using the same rubric. If a component is genuinely absent from their answer, score that part 0.`
       : `The pupil's answer below IS already split into 5 labelled parts. Mark each part as given.`;
 
-  const system = `You are a supportive but honest Primary School English oral examiner in Singapore, marking a pupil's spoken response using the TREES framework (Thought, Reason, Evidence, Experience, Suggestion).
+  // Evidence (E1) instructions vary depending on how much visual grounding
+  // this specific call actually has - a text-only model has no way to
+  // verify a picture claim, so it should never be scored as if it could.
+  let visionInstruction;
+  if (imageAttached) {
+    visionInstruction = `An image of the picture stimulus is attached below the pupil's answer. Actually look at it. For the Evidence (E1) part, verify whether the pupil's claim accurately describes something really present in the picture - if it's vague, generic, or doesn't match what's actually shown, score E1 low even if it sounds fluent.`;
+  } else if (imageDescription) {
+    visionInstruction = `You cannot see the actual picture, but the teacher has provided this description of it: "${imageDescription}". Use this description (not guesswork) to judge the Evidence (E1) part - if the pupil's claim contradicts or ignores this description, score E1 low; if it aligns with specific details in it, score E1 well.`;
+  } else {
+    visionInstruction = `You cannot see the actual picture and no teacher description was provided for it. For the Evidence (E1) part, judge only on plausibility and specificity of the claim - award partial credit for a specific, plausible-sounding reference to the picture, but do not penalise for visual accuracy you have no way to verify.`;
+  }
 
-Marking rubric (set by the teacher), out of 25 marks total:
+  const fillerInstruction =
+    fillerStats.totalWords > 0
+      ? `Filler-word check (already counted by the app, not your job to recount): the pupil's full answer contains ${fillerStats.count} filler word(s) (um/uh/erm/like/you know, etc.) out of ${fillerStats.totalWords} total words (${Math.round(fillerStats.density * 100)}% filler density). Note this is only as reliable as the speech-to-text transcript, which sometimes smooths over disfluencies - use it as one signal, not the only one, when scoring Fluency & Delivery.`
+      : `The transcript was too short to meaningfully measure filler-word density - use your own judgement on Fluency & Delivery from the text alone.`;
+
+  const system = `You are a supportive but honest Primary School English oral examiner in Singapore, marking a pupil's spoken response using the TREES framework (Thought, Reason, Evidence, Experience, Suggestion) plus a separate Language Use component.
+
+Marking rubric (set by the teacher), out of ${FULL_MAX_TOTAL} marks total (${TREES_MAX_TOTAL} for TREES content + ${LANGUAGE_MAX_TOTAL} for Language Use):
 ${rubricText}
 
 ${modeInstruction}
 
+${visionInstruction}
+
+${fillerInstruction}
+
 Be encouraging in tone, age-appropriate for a 9-12 year old. For the Experience part specifically, you MUST score and return the 5 sub-criteria (Relevance 0-2, 5W1H Specificity 0-6, Authenticity/Personal Voice 0-3, Clarity & Sequence 0-2, Reflection/Lesson Learnt 0-2) and their sum must equal the Experience "points" value. Do not reward length alone anywhere - reward specific, believable, relevant detail.
+Language Use is separate from content - judge Grammar Accuracy (0-2) and Vocabulary Range & Appropriateness (0-2) from the pupil's actual sentences (not from how interesting their ideas are), and Fluency & Delivery (0-1) mainly from the filler-word signal above and general smoothness of the transcript.
 Give ONE concrete, actionable suggestion for improvement per weak part in that part's "note".
-Also give one overall suggestion on how to make a future personal experience answer stronger.
+Also write "modelAnswer": a short rewritten version (roughly 60-120 words) of the pupil's OWN Experience answer (or their combined answer if in single mode) that keeps their real content/experience but fixes grammar, adds specific missing 5W1H detail, and reads more fluently - this shows the pupil what a stronger version of THEIR OWN answer could sound like, not a generic unrelated example.
 Respond with ONLY valid JSON, no markdown fences, no preamble, no explanation before or after, matching exactly this shape:
 {
   "breakdown": [
@@ -562,12 +772,16 @@ Respond with ONLY valid JSON, no markdown fences, no preamble, no explanation be
         { "label": "Reflection / Lesson Learnt", "points": 0, "max": 2 }
       ]
     },
-    { "part": "Suggestion", "points": 0, "max": 2, "note": "short comment, max 25 words" }
+    { "part": "Suggestion", "points": 0, "max": 2, "note": "short comment, max 25 words" },
+    { "part": "Grammar Accuracy", "points": 0, "max": 2, "note": "short comment, max 25 words" },
+    { "part": "Vocabulary Range & Appropriateness", "points": 0, "max": 2, "note": "short comment, max 25 words" },
+    { "part": "Fluency & Delivery", "points": 0, "max": 1, "note": "short comment, max 25 words" }
   ],
   "total": 0,
-  "max": 25,
+  "max": ${FULL_MAX_TOTAL},
   "feedback": "2-3 encouraging sentences summarising strengths and one thing to work on, max 60 words",
-  "suggestion": "one concrete practical tip to improve their next experience answer, max 30 words"
+  "suggestion": "one concrete practical tip to improve their next experience answer, max 30 words",
+  "modelAnswer": "a rewritten, stronger version of the pupil's own answer, roughly 60-120 words"
 }`;
 
   const content =
@@ -584,7 +798,34 @@ ${content}`;
   return { system, user };
 }
 
-// ---------- Provider: Groq (main marker, https://console.groq.com) ----------
+// Fetches a topic's stimulus picture and base64-encodes it for a multimodal
+// AI call. Used so the marker can actually verify Evidence (E1) claims
+// against the real picture instead of guessing. Returns null on any failure
+// (bad URL, non-image response, too large, network error) - callers must
+// treat that as "no image available" and fall back to the teacher's text
+// description (topic.imageDescription) if one was set.
+async function fetchImageAsBase64(url) {
+  if (!url) return null;
+  try {
+    const resp = await fetch(url, { headers: { accept: "image/*" } });
+    if (!resp.ok) return null;
+    const contentType = (resp.headers.get("content-type") || "").split(";")[0].trim();
+    if (!contentType.startsWith("image/")) return null;
+    const buf = await resp.arrayBuffer();
+    if (buf.byteLength > 8 * 1024 * 1024) return null; // 8MB safety cap
+    const bytes = new Uint8Array(buf);
+    let binary = "";
+    const chunkSize = 8192;
+    for (let i = 0; i < bytes.length; i += chunkSize) {
+      binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunkSize));
+    }
+    return { mimeType: contentType, base64: btoa(binary) };
+  } catch (e) {
+    return null;
+  }
+}
+
+// ---------- Provider: Groq (2nd marker, https://console.groq.com) ----------
 async function callGroq(env, system, user, model) {
   const resp = await fetch("https://api.groq.com/openai/v1/chat/completions", {
     method: "POST",
@@ -619,8 +860,12 @@ async function callGroq(env, system, user, model) {
 }
 
 // ---------- Provider: Google Gemini (2nd marker, https://aistudio.google.com/apikey) ----------
-async function callGemini(env, system, user) {
-  const model = "gemini-2.5-flash"; // fast + cheap, generous free tier
+async function callGemini(env, system, user, image) {
+  const model = "gemini-2.5-flash"; // fast + cheap, generous free tier, multimodal
+  const parts = [{ text: user }];
+  if (image && image.base64) {
+    parts.push({ inline_data: { mime_type: image.mimeType, data: image.base64 } });
+  }
   const resp = await fetch(
     `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${env.GEMINI_API_KEY}`,
     {
@@ -628,7 +873,7 @@ async function callGemini(env, system, user) {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         systemInstruction: { parts: [{ text: system }] },
-        contents: [{ role: "user", parts: [{ text: user }] }],
+        contents: [{ role: "user", parts }],
         generationConfig: {
           responseMimeType: "application/json",
           temperature: 0.4,
@@ -677,12 +922,26 @@ async function aiScore(env, topic, question, mode, data) {
   const rubricText = (storedRubric && storedRubric.trim()) || DEFAULT_RUBRIC;
   const storedGroqModel = await env.CCv4_DATA.get("config:model_groq");
   const groqModel = (storedGroqModel && storedGroqModel.trim()) || DEFAULT_GROQ_MODEL;
-  const { system, user } = buildPrompts(topic, question, mode, data, rubricText);
+
+  const combinedText = mode === "single" ? data.text || "" : TREES_ORDER.map(([key]) => data.parts[key] || "").join(" ");
+  const fillerStats = countFillers(combinedText);
+  const imageDescription = (topic && topic.imageDescription) || "";
+
+  // Gemini is tried first specifically because it's the only vision-capable
+  // provider here - fetch the picture once, up front, so we know whether a
+  // real image or only the teacher's fallback description is available.
+  let image = null;
+  if (env.GEMINI_API_KEY && topic && topic.imageUrl) {
+    image = await fetchImageAsBase64(topic.imageUrl);
+  }
+
+  const visionPrompts = buildPrompts(topic, question, mode, data, rubricText, { imageAttached: !!image, imageDescription, fillerStats });
+  const textOnlyPrompts = image ? buildPrompts(topic, question, mode, data, rubricText, { imageAttached: false, imageDescription, fillerStats }) : visionPrompts;
 
   const attempts = [];
-  if (env.GROQ_API_KEY) attempts.push({ name: "groq", run: () => callGroq(env, system, user, groqModel) });
-  if (env.GEMINI_API_KEY) attempts.push({ name: "gemini", run: () => callGemini(env, system, user) });
-  if (env.AI) attempts.push({ name: "workers-ai", run: () => callWorkersAI(env, system, user) });
+  if (env.GEMINI_API_KEY) attempts.push({ name: "gemini", run: () => callGemini(env, visionPrompts.system, visionPrompts.user, image) });
+  if (env.GROQ_API_KEY) attempts.push({ name: "groq", run: () => callGroq(env, textOnlyPrompts.system, textOnlyPrompts.user, groqModel) });
+  if (env.AI) attempts.push({ name: "workers-ai", run: () => callWorkersAI(env, textOnlyPrompts.system, textOnlyPrompts.user) });
 
   for (const attempt of attempts) {
     try {
@@ -692,7 +951,7 @@ async function aiScore(env, topic, question, mode, data) {
       // this provider failed or errored - try the next one in the chain
     }
   }
-  return { ...ruleBasedScore(mode, data, topic), markedBy: "fallback" };
+  return { ...ruleBasedScore(mode, data, topic, fillerStats), markedBy: "fallback" };
 }
 
 // ---------- Router ----------
@@ -725,27 +984,42 @@ export default {
       // ---------- AUTH ----------
       if (pathname === "/api/login" && request.method === "POST") {
         const body = await request.json();
-        let name = (body.name || "").trim();
-        if (!name) return badRequest("Please enter a name.");
-        if (name.length > 40) name = name.slice(0, 40);
-        const { clean, flagged } = scanVulgarity(name);
-        name = clean;
+        let raw = (body.name || "").trim();
+        if (!raw) return badRequest("Please enter a name.");
+        if (raw.length > 60) raw = raw.slice(0, 60);
 
+        // Optional "Name@Class" syntax, e.g. "Jovan@5IG" -> name "Jovan",
+        // class "5IG". This is how pupils are tracked and grouped for the
+        // teacher's per-pupil history/progress view - see /api/teacher/pupils.
+        let name = raw;
+        let pupilClass = "";
+        const atIdx = raw.indexOf("@");
+        if (atIdx > 0 && atIdx < raw.length - 1) {
+          name = raw.slice(0, atIdx).trim();
+          pupilClass = raw.slice(atIdx + 1).trim();
+        }
+        if (name.length > 40) name = name.slice(0, 40);
+        if (pupilClass.length > 20) pupilClass = pupilClass.slice(0, 20);
+        name = scanVulgarity(name).clean;
+        pupilClass = scanVulgarity(pupilClass).clean;
+        // Class names double as a KV key segment - keep them to a safe,
+        // predictable charset rather than letting arbitrary punctuation in.
+        pupilClass = pupilClass.replace(/[^a-zA-Z0-9 _-]/g, "").trim();
+
+        if (!name) return badRequest("Please enter a name.");
         if (name.toLowerCase() === TEACHER_USERNAME) {
           // Teacher path requires a password on a second step; issue a "pending" marker only.
           return json({ requiresTeacherPassword: true });
         }
 
+        const pupilClassKey = pupilClass || "unassigned";
         const token = uid();
         await env.CCv4_DATA.put(
           `session:${token}`,
-          JSON.stringify({ name, role: "pupil", createdAt: Date.now() }),
+          JSON.stringify({ name, pupilClass: pupilClassKey, role: "pupil", createdAt: Date.now() }),
           { expirationTtl: 60 * 60 * 6 }
         );
-        if (flagged) {
-          // still let them in, but keep name masked
-        }
-        return json({ token, name, role: "pupil" });
+        return json({ token, name, pupilClass: pupilClassKey, role: "pupil" });
       }
 
       if (pathname === "/api/teacher/login" && request.method === "POST") {
@@ -851,6 +1125,7 @@ export default {
             breakdown: result.breakdown,
             feedback: result.feedback,
             suggestion: result.suggestion,
+            modelAnswer: result.modelAnswer || "",
             flagged: ri.anyFlag,
             markedBy: result.markedBy,
             // teacher-only - stripped out of the response sent back to the
@@ -862,15 +1137,17 @@ export default {
         const finalScore = Math.round((scoreSum / 3) * 10) / 10; // average, 1 decimal place
 
         const id = uid();
+        const pupilClass = session.pupilClass || "unassigned";
         const record = {
           id,
           pupilName: session.name,
+          pupilClass,
           topicId,
           topicTitle: topic ? topic.title : "Unknown",
           mode,
           rounds,
           finalScore,
-          maxScore: TREES_MAX_TOTAL,
+          maxScore: FULL_MAX_TOTAL,
           flagged: anyFlagTotal,
           practice,
           // true when at least one of the 3 questions fell all the way back
@@ -888,12 +1165,27 @@ export default {
         if (countsForLeaderboard) {
           // update pupil aggregate (leaderboard) - practice attempts, and
           // attempts marked entirely offline, never count
-          const pupilRaw = await env.CCv4_DATA.get(`pupil:${session.name}`);
-          const pupil = pupilRaw ? JSON.parse(pupilRaw) : { name: session.name, bestScore: 0, totalScore: 0, attempts: 0 };
+          const pKey = pupilKey(pupilClass, session.name);
+          const pupilRaw = await env.CCv4_DATA.get(pKey);
+          const pupil = pupilRaw ? JSON.parse(pupilRaw) : { name: session.name, pupilClass, bestScore: 0, totalScore: 0, attempts: 0 };
           pupil.attempts += 1;
           pupil.totalScore += finalScore;
           pupil.bestScore = Math.max(pupil.bestScore, finalScore);
-          await env.CCv4_DATA.put(`pupil:${session.name}`, JSON.stringify(pupil));
+          await env.CCv4_DATA.put(pKey, JSON.stringify(pupil));
+
+          // Progress history - a capped rolling log used to compute trend
+          // and per-criterion strengths/concerns in Teacher Tools -> Pupils.
+          // Practice/degraded attempts are excluded for the same reason they
+          // don't count toward the leaderboard: they're not a reliable
+          // signal of the pupil's actual ability.
+          await pushPupilHistory(env, pupilClass, session.name, {
+            timestamp: Date.now(),
+            topicId,
+            topicTitle: topic ? topic.title : "Unknown",
+            finalScore,
+            maxScore: FULL_MAX_TOTAL,
+            breakdown: averageRoundBreakdown(rounds),
+          });
         }
 
         let warning = null;
@@ -927,21 +1219,17 @@ export default {
         const session = await getSession(request, env);
         if (!session) return json({ error: "Please log in first." }, 401);
         const idx = JSON.parse((await env.CCv4_DATA.get("submissions_index")) || "[]");
-        const pupilsSeen = new Map();
-        // aggregate best score per pupil for a clean leaderboard
-        const names = new Set();
-        for (const id of idx) names.add(id); // noop just to keep var used
-        const listKeys = idx;
-        const pupilNames = new Set();
-        for (const subId of listKeys) {
+        const pupilPairs = new Map(); // "class::name" -> {name, pupilClass}
+        for (const subId of idx) {
           const raw = await env.CCv4_DATA.get(`submission:${subId}`);
           if (!raw) continue;
           const s = JSON.parse(raw);
-          pupilNames.add(s.pupilName);
+          const cls = s.pupilClass || "unassigned";
+          pupilPairs.set(`${cls}::${s.pupilName}`, { name: s.pupilName, pupilClass: cls });
         }
         const board = [];
-        for (const name of pupilNames) {
-          const raw = await env.CCv4_DATA.get(`pupil:${name}`);
+        for (const { name, pupilClass } of pupilPairs.values()) {
+          const raw = await env.CCv4_DATA.get(pupilKey(pupilClass, name));
           if (raw) board.push(JSON.parse(raw));
         }
         board.sort((a, b) => b.bestScore - a.bestScore || b.totalScore - a.totalScore);
@@ -978,6 +1266,7 @@ export default {
           [
             "id",
             "pupilName",
+            "pupilClass",
             "topicTitle",
             "mode",
             "practice",
@@ -1026,6 +1315,7 @@ export default {
             [
               s.id,
               s.pupilName,
+              s.pupilClass || "unassigned",
               s.topicTitle,
               s.mode,
               s.practice ? "yes" : "no",
@@ -1111,17 +1401,52 @@ export default {
         if (!requireTeacher(session)) return json({ error: "Not authorised." }, 403);
         const body = await request.json().catch(() => ({}));
         if (body.name) {
-          await env.CCv4_DATA.delete(`pupil:${body.name}`);
+          const cls = body.pupilClass || "unassigned";
+          await env.CCv4_DATA.delete(pupilKey(cls, body.name));
+          await env.CCv4_DATA.delete(pupilHistoryKey(cls, body.name));
         } else {
           const idx = JSON.parse((await env.CCv4_DATA.get("submissions_index")) || "[]");
+          const pairs = new Set();
           for (const id of idx) {
             const raw = await env.CCv4_DATA.get(`submission:${id}`);
             if (!raw) continue;
             const s = JSON.parse(raw);
-            await env.CCv4_DATA.delete(`pupil:${s.pupilName}`);
+            pairs.add(`${s.pupilClass || "unassigned"}::${s.pupilName}`);
+          }
+          for (const pair of pairs) {
+            const [cls, name] = pair.split("::");
+            await env.CCv4_DATA.delete(pupilKey(cls, name));
+            await env.CCv4_DATA.delete(pupilHistoryKey(cls, name));
           }
         }
         return json({ ok: true });
+      }
+
+      // ---------- PUPIL TRACKING (v6) ----------
+      if (pathname === "/api/teacher/pupils" && request.method === "GET") {
+        if (!requireTeacher(session)) return json({ error: "Not authorised." }, 403);
+        const list = await env.CCv4_DATA.list({ prefix: "pupil:" });
+        const pupils = [];
+        for (const { name: key } of list.keys) {
+          if (key.endsWith(":history")) continue;
+          const raw = await env.CCv4_DATA.get(key);
+          if (raw) pupils.push(JSON.parse(raw));
+        }
+        pupils.sort((a, b) => (a.pupilClass || "").localeCompare(b.pupilClass || "") || a.name.localeCompare(b.name));
+        return json({ pupils });
+      }
+
+      if (pathname === "/api/teacher/pupil" && request.method === "GET") {
+        if (!requireTeacher(session)) return json({ error: "Not authorised." }, 403);
+        const name = (url.searchParams.get("name") || "").trim();
+        const pupilClass = (url.searchParams.get("class") || "unassigned").trim();
+        if (!name) return badRequest("Missing pupil name.");
+        const raw = await env.CCv4_DATA.get(pupilKey(pupilClass, name));
+        const pupil = raw ? JSON.parse(raw) : { name, pupilClass, bestScore: 0, totalScore: 0, attempts: 0 };
+        const historyRaw = await env.CCv4_DATA.get(pupilHistoryKey(pupilClass, name));
+        const history = historyRaw ? JSON.parse(historyRaw) : [];
+        const { strengths, concerns, rows } = computeStrengthsConcerns(history);
+        return json({ pupil, history, strengths, concerns, rows });
       }
 
       if (pathname === "/api/teacher/topics" && request.method === "POST") {
@@ -1132,6 +1457,7 @@ export default {
           id,
           title: (body.title || "Untitled topic").trim(),
           imageUrl: (body.imageUrl || "").trim(),
+          imageDescription: (body.imageDescription || "").trim().slice(0, 600),
           questions: Array.isArray(body.questions) ? body.questions.filter(Boolean) : [],
           tags: Array.isArray(body.tags) ? body.tags : [],
           coach: sanitizeCoach(body.coach),
