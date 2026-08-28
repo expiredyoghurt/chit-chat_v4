@@ -2,7 +2,7 @@
  * Just a Chit-Chat
  * Cloudflare Worker backend + single-file frontend.
  *
- * KV layout (binding: CCv4_DATA)
+ * KV layout (binding: CCv5_DATA)
  *   config:teacher_password        -> string
  *   config:rubric                  -> string (free-text marking rubric shown to the AI marker)
  *   config:model_groq              -> string (Groq model ID used by callGroq; defaults to DEFAULT_GROQ_MODEL if unset)
@@ -53,12 +53,12 @@ const GROQ_MODEL_OPTIONS = [
   { id: "qwen/qwen3.6-27b", label: "Qwen3.6 27B" },
 ];
 
-const DEFAULT_RUBRIC = `TREES is marked out of 25 marks, plus a separate Language Use
-component out of 5 marks (30 marks total), distributed as follows:
+const DEFAULT_RUBRIC = `TREES is marked out of 20 marks, plus a separate Language Use
+component out of 5 marks (25 marks total), distributed as follows:
 - T Thought: 0-2 marks
-- R Reason: 0-3 marks
-- E Evidence (from the picture/topic): 0-3 marks
-- E Experience: 0-15 marks (the most heavily weighted part)
+- R Reason: 0-2 marks
+- E Evidence (from the picture/topic): 0-2 marks
+- E Experience: 0-12 marks (the most heavily weighted part)
 - S Suggestion: 0-2 marks
 - Language Use (Grammar, Vocabulary, Fluency & Delivery): 0-5 marks - see below
 
@@ -67,19 +67,19 @@ component out of 5 marks (30 marks total), distributed as follows:
 1 = simple or vague thought
 2 = clear, relevant thought that answers the question directly
 
---- R Reason (0-3) ---
+--- R Reason (0-2) ---
 0 = no reason given
-1 = vague or weak reason
-2 = relevant reason but with limited explanation
-3 = clear, relevant reason with some elaboration
+0 = vague or weak reason
+1 = relevant reason but with limited explanation
+2 = clear, relevant reason with some elaboration
 
---- E Evidence from picture/topic (0-3) ---
+--- E Evidence from picture/topic (0-2) ---
 0 = no reference to the picture or topic
-1 = mentions the picture vaguely
-2 = identifies a relevant detail from the picture or topic
-3 = uses a specific detail and explains how it supports the answer
+0 = mentions the picture vaguely
+1 = identifies a relevant detail from the picture or topic
+2 = uses a specific detail and explains how it supports the answer
 
---- E Experience (0-15) ---
+--- E Experience (0-12) ---
 This is the main focus of the rubric. Do NOT reward length alone - reward
 specific, believable, relevant personal details. A long but generic or
 memorised-sounding answer should score LOW. Break this into 5 sub-criteria
@@ -92,21 +92,21 @@ and sum them for the Experience total:
    Who was involved / What happened / When it happened / Where it happened /
    Why it happened or why the pupil acted / How it ended or was resolved
 
-3. Authenticity / personal voice (0-3)
+3. Authenticity / personal voice (0-2)
    0 = no personal experience or clearly copied/generic
-   1 = some personal reference but mostly generic
-   2 = sounds mostly personal and believable
-   3 = sounds authentic and natural, with realistic details, feelings or reactions
+   0 = some personal reference but mostly generic
+   1 = sounds mostly personal and believable
+   2 = sounds authentic and natural, with realistic details, feelings or reactions
    Look for: first-person language (I/my/we), natural small believable details,
    realistic Singapore settings (void deck, MRT, canteen, CCA), genuine feelings.
 
 4. Clarity and sequence (0-2)
-   0 = confusing or incomplete, 1 = understandable but jumps around,
-   2 = clearly sequenced with a beginning, middle and ending
+   0 = confusing or incomplete, 0 = understandable but jumps around,
+   1 = clearly sequenced with a beginning, middle and ending
 
-5. Reflection / lesson learnt (0-2)
-   0 = no reflection, 1 = simple feeling or lesson stated,
-   2 = meaningful reflection that links back to the topic
+5. Reflection / lesson learnt (0-1)
+   0 = no reflection, 0 = simple feeling or lesson stated,
+   1 = meaningful reflection that links back to the topic
 
 --- S Suggestion (0-2) ---
 0 = no suggestion given
@@ -179,11 +179,11 @@ const PUPIL_HISTORY_CAP = 50; // rolling window - old attempts drop off rather t
 
 async function pushPupilHistory(env, pupilClass, name, entry) {
   const key = pupilHistoryKey(pupilClass, name);
-  const raw = await env.CCv4_DATA.get(key);
+  const raw = await env.CCv5_DATA.get(key);
   const history = raw ? JSON.parse(raw) : [];
   history.push(entry);
   while (history.length > PUPIL_HISTORY_CAP) history.shift();
-  await env.CCv4_DATA.put(key, JSON.stringify(history));
+  await env.CCv5_DATA.put(key, JSON.stringify(history));
   return history;
 }
 
@@ -283,7 +283,7 @@ async function hashPassword(password, salt) {
 // transparently upgrade the stored value to the salted-hash format so the
 // plaintext isn't left sitting in KV any longer than necessary.
 async function verifyTeacherPassword(env, password) {
-  const stored = await env.CCv4_DATA.get("config:teacher_password");
+  const stored = await env.CCv5_DATA.get("config:teacher_password");
   if (!stored) return { ok: false, unset: true };
 
   let record = null;
@@ -309,14 +309,14 @@ async function verifyTeacherPassword(env, password) {
 async function setTeacherPassword(env, newPassword) {
   const salt = uid();
   const hash = await hashPassword(newPassword, salt);
-  await env.CCv4_DATA.put("config:teacher_password", JSON.stringify({ salt, hash }));
+  await env.CCv5_DATA.put("config:teacher_password", JSON.stringify({ salt, hash }));
 }
 
 async function getSession(request, env) {
   const auth = request.headers.get("authorization") || "";
   const token = auth.replace(/^Bearer\s+/i, "").trim();
   if (!token) return null;
-  const raw = await env.CCv4_DATA.get(`session:${token}`);
+  const raw = await env.CCv5_DATA.get(`session:${token}`);
   if (!raw) return null;
   return { token, ...JSON.parse(raw) };
 }
@@ -357,46 +357,46 @@ function scanAllParts(parts) {
 
 // ---------- KV list helpers ----------
 async function pushIndex(env, key, id) {
-  const raw = await env.CCv4_DATA.get(key);
+  const raw = await env.CCv5_DATA.get(key);
   const arr = raw ? JSON.parse(raw) : [];
   arr.push(id);
-  await env.CCv4_DATA.put(key, JSON.stringify(arr));
+  await env.CCv5_DATA.put(key, JSON.stringify(arr));
 }
 
 async function removeFromIndex(env, key, id) {
-  const raw = await env.CCv4_DATA.get(key);
+  const raw = await env.CCv5_DATA.get(key);
   const arr = raw ? JSON.parse(raw) : [];
   const next = arr.filter((x) => x !== id);
-  await env.CCv4_DATA.put(key, JSON.stringify(next));
+  await env.CCv5_DATA.put(key, JSON.stringify(next));
 }
 
 async function ensureSeeded(env) {
-  const idx = await env.CCv4_DATA.get("topics_index");
+  const idx = await env.CCv5_DATA.get("topics_index");
   if (idx) return;
   const ids = [];
   for (const t of SEED_TOPICS) {
-    await env.CCv4_DATA.put(`topic:${t.id}`, JSON.stringify(t));
+    await env.CCv5_DATA.put(`topic:${t.id}`, JSON.stringify(t));
     ids.push(t.id);
   }
-  await env.CCv4_DATA.put("topics_index", JSON.stringify(ids));
+  await env.CCv5_DATA.put("topics_index", JSON.stringify(ids));
 }
 
 // ---------- Rubric fallback (no AI key configured) ----------
 const TREES_ORDER = [
   ["T", "Thought", 2],
-  ["R", "Reason", 3],
-  ["E1", "Evidence", 3],
-  ["E2", "Experience", 15],
-  ["S", "Suggestion", 2],
+  ["R", "Reason", 2],
+  ["E1", "Evidence", 2],
+  ["E2", "Experience", 12],
+  ["S", "Suggestion", 1],
 ];
 const TREES_MAX_TOTAL = TREES_ORDER.reduce((sum, [, , max]) => sum + max, 0); // 25
 
 const EXPERIENCE_SUB = [
   ["Relevance", 2],
   ["5W1H Specificity", 6],
-  ["Authenticity / Personal Voice", 3],
-  ["Clarity & Sequence", 2],
-  ["Reflection / Lesson Learnt", 2],
+  ["Authenticity / Personal Voice", 2],
+  ["Clarity & Sequence", 1],
+  ["Reflection / Lesson Learnt", 1],
 ];
 
 // ---------- Language Use (new in v6) - additive to TREES, not part of it ----------
@@ -918,9 +918,9 @@ async function callWorkersAI(env, system, user) {
 
 // ---------- AI marking: Groq -> Gemini -> Workers AI -> rule-based (offline) ----------
 async function aiScore(env, topic, question, mode, data) {
-  const storedRubric = await env.CCv4_DATA.get("config:rubric");
+  const storedRubric = await env.CCv5_DATA.get("config:rubric");
   const rubricText = (storedRubric && storedRubric.trim()) || DEFAULT_RUBRIC;
-  const storedGroqModel = await env.CCv4_DATA.get("config:model_groq");
+  const storedGroqModel = await env.CCv5_DATA.get("config:model_groq");
   const groqModel = (storedGroqModel && storedGroqModel.trim()) || DEFAULT_GROQ_MODEL;
 
   const combinedText = mode === "single" ? data.text || "" : TREES_ORDER.map(([key]) => data.parts[key] || "").join(" ");
@@ -1014,7 +1014,7 @@ export default {
 
         const pupilClassKey = pupilClass || "unassigned";
         const token = uid();
-        await env.CCv4_DATA.put(
+        await env.CCv5_DATA.put(
           `session:${token}`,
           JSON.stringify({ name, pupilClass: pupilClassKey, role: "pupil", createdAt: Date.now() }),
           { expirationTtl: 60 * 60 * 6 }
@@ -1031,14 +1031,14 @@ export default {
         const verdict = await verifyTeacherPassword(env, password);
         if (verdict.unset) {
           return json(
-            { error: "No teacher password has been set up yet. Ask an admin to run: wrangler kv:key put --binding=CCv4_DATA \"config:teacher_password\" \"yourPassword\"" },
+            { error: "No teacher password has been set up yet. Ask an admin to run: wrangler kv:key put --binding=CCv5_DATA \"config:teacher_password\" \"yourPassword\"" },
             500
           );
         }
         if (!verdict.ok) return json({ error: "Incorrect password." }, 403);
 
         const token = uid();
-        await env.CCv4_DATA.put(
+        await env.CCv5_DATA.put(
           `session:${token}`,
           JSON.stringify({ name: "Teacher", role: "teacher", createdAt: Date.now() }),
           { expirationTtl: 60 * 60 * 6 }
@@ -1048,10 +1048,10 @@ export default {
 
       // ---------- TOPICS ----------
       if (pathname === "/api/topics" && request.method === "GET") {
-        const idx = JSON.parse((await env.CCv4_DATA.get("topics_index")) || "[]");
+        const idx = JSON.parse((await env.CCv5_DATA.get("topics_index")) || "[]");
         const topics = [];
         for (const id of idx) {
-          const raw = await env.CCv4_DATA.get(`topic:${id}`);
+          const raw = await env.CCv5_DATA.get(`topic:${id}`);
           if (raw) topics.push(JSON.parse(raw));
         }
         return json({ topics });
@@ -1075,7 +1075,7 @@ export default {
           return badRequest("Expected a topic and exactly 3 answers.");
         }
 
-        const topicRaw = await env.CCv4_DATA.get(`topic:${topicId}`);
+        const topicRaw = await env.CCv5_DATA.get(`topic:${topicId}`);
         const topic = topicRaw ? JSON.parse(topicRaw) : null;
         const questions = (topic && topic.questions) || [];
 
@@ -1158,7 +1158,7 @@ export default {
           gradingDegraded: anyFallback,
           createdAt: Date.now(),
         };
-        await env.CCv4_DATA.put(`submission:${id}`, JSON.stringify(record));
+        await env.CCv5_DATA.put(`submission:${id}`, JSON.stringify(record));
         await pushIndex(env, "submissions_index", id);
 
         const countsForLeaderboard = !practice && !anyFallback;
@@ -1166,12 +1166,12 @@ export default {
           // update pupil aggregate (leaderboard) - practice attempts, and
           // attempts marked entirely offline, never count
           const pKey = pupilKey(pupilClass, session.name);
-          const pupilRaw = await env.CCv4_DATA.get(pKey);
+          const pupilRaw = await env.CCv5_DATA.get(pKey);
           const pupil = pupilRaw ? JSON.parse(pupilRaw) : { name: session.name, pupilClass, bestScore: 0, totalScore: 0, attempts: 0 };
           pupil.attempts += 1;
           pupil.totalScore += finalScore;
           pupil.bestScore = Math.max(pupil.bestScore, finalScore);
-          await env.CCv4_DATA.put(pKey, JSON.stringify(pupil));
+          await env.CCv5_DATA.put(pKey, JSON.stringify(pupil));
 
           // Progress history - a capped rolling log used to compute trend
           // and per-criterion strengths/concerns in Teacher Tools -> Pupils.
@@ -1218,10 +1218,10 @@ export default {
         // the .workers.dev URL.
         const session = await getSession(request, env);
         if (!session) return json({ error: "Please log in first." }, 401);
-        const idx = JSON.parse((await env.CCv4_DATA.get("submissions_index")) || "[]");
+        const idx = JSON.parse((await env.CCv5_DATA.get("submissions_index")) || "[]");
         const pupilPairs = new Map(); // "class::name" -> {name, pupilClass}
         for (const subId of idx) {
-          const raw = await env.CCv4_DATA.get(`submission:${subId}`);
+          const raw = await env.CCv5_DATA.get(`submission:${subId}`);
           if (!raw) continue;
           const s = JSON.parse(raw);
           const cls = s.pupilClass || "unassigned";
@@ -1229,7 +1229,7 @@ export default {
         }
         const board = [];
         for (const { name, pupilClass } of pupilPairs.values()) {
-          const raw = await env.CCv4_DATA.get(pupilKey(pupilClass, name));
+          const raw = await env.CCv5_DATA.get(pupilKey(pupilClass, name));
           if (raw) board.push(JSON.parse(raw));
         }
         board.sort((a, b) => b.bestScore - a.bestScore || b.totalScore - a.totalScore);
@@ -1241,7 +1241,7 @@ export default {
 
       if (pathname === "/api/teacher/submissions" && request.method === "GET") {
         if (!requireTeacher(session)) return json({ error: "Not authorised." }, 403);
-        const idx = JSON.parse((await env.CCv4_DATA.get("submissions_index")) || "[]");
+        const idx = JSON.parse((await env.CCv5_DATA.get("submissions_index")) || "[]");
         const total = idx.length;
         const limitParam = parseInt(url.searchParams.get("limit"), 10);
         const offsetParam = parseInt(url.searchParams.get("offset"), 10);
@@ -1252,7 +1252,7 @@ export default {
         const page = idx.slice().reverse().slice(offset, offset + limit);
         const items = [];
         for (const id of page) {
-          const raw = await env.CCv4_DATA.get(`submission:${id}`);
+          const raw = await env.CCv5_DATA.get(`submission:${id}`);
           if (raw) items.push(JSON.parse(raw));
         }
         return json({ submissions: items, total, offset, limit, hasMore: offset + limit < total });
@@ -1260,7 +1260,7 @@ export default {
 
       if (pathname === "/api/teacher/submissions/export" && request.method === "GET") {
         if (!requireTeacher(session)) return json({ error: "Not authorised." }, 403);
-        const idx = JSON.parse((await env.CCv4_DATA.get("submissions_index")) || "[]");
+        const idx = JSON.parse((await env.CCv5_DATA.get("submissions_index")) || "[]");
         const rows = [];
         rows.push(
           [
@@ -1292,7 +1292,7 @@ export default {
             .join(",")
         );
         for (const id of idx) {
-          const raw = await env.CCv4_DATA.get(`submission:${id}`);
+          const raw = await env.CCv5_DATA.get(`submission:${id}`);
           if (!raw) continue;
           const s = JSON.parse(raw);
           const rounds = s.rounds || [];
@@ -1343,7 +1343,7 @@ export default {
 
       if (pathname === "/api/teacher/rubric" && request.method === "GET") {
         if (!requireTeacher(session)) return json({ error: "Not authorised." }, 403);
-        const stored = await env.CCv4_DATA.get("config:rubric");
+        const stored = await env.CCv5_DATA.get("config:rubric");
         return json({ rubric: stored || DEFAULT_RUBRIC, isDefault: !stored });
       }
 
@@ -1352,16 +1352,16 @@ export default {
         const body = await request.json();
         const rubric = (body.rubric || "").trim();
         if (!rubric) {
-          await env.CCv4_DATA.delete("config:rubric"); // reset to default
+          await env.CCv5_DATA.delete("config:rubric"); // reset to default
           return json({ ok: true, rubric: DEFAULT_RUBRIC, isDefault: true });
         }
-        await env.CCv4_DATA.put("config:rubric", rubric);
+        await env.CCv5_DATA.put("config:rubric", rubric);
         return json({ ok: true, rubric, isDefault: false });
       }
 
       if (pathname === "/api/teacher/model-groq" && request.method === "GET") {
         if (!requireTeacher(session)) return json({ error: "Not authorised." }, 403);
-        const stored = await env.CCv4_DATA.get("config:model_groq");
+        const stored = await env.CCv5_DATA.get("config:model_groq");
         return json({ model: stored || DEFAULT_GROQ_MODEL, isDefault: !stored, options: GROQ_MODEL_OPTIONS });
       }
 
@@ -1370,17 +1370,17 @@ export default {
         const body = await request.json();
         const model = (body.model || "").trim();
         if (!model) {
-          await env.CCv4_DATA.delete("config:model_groq"); // reset to default
+          await env.CCv5_DATA.delete("config:model_groq"); // reset to default
           return json({ ok: true, model: DEFAULT_GROQ_MODEL, isDefault: true });
         }
-        await env.CCv4_DATA.put("config:model_groq", model);
+        await env.CCv5_DATA.put("config:model_groq", model);
         return json({ ok: true, model, isDefault: false });
       }
 
       if (pathname.startsWith("/api/teacher/submissions/") && request.method === "DELETE") {
         if (!requireTeacher(session)) return json({ error: "Not authorised." }, 403);
         const id = pathname.split("/").pop();
-        await env.CCv4_DATA.delete(`submission:${id}`);
+        await env.CCv5_DATA.delete(`submission:${id}`);
         await removeFromIndex(env, "submissions_index", id);
         return json({ ok: true });
       }
@@ -1388,12 +1388,12 @@ export default {
       if (pathname.startsWith("/api/teacher/submissions/") && request.method === "PUT") {
         if (!requireTeacher(session)) return json({ error: "Not authorised." }, 403);
         const id = pathname.split("/").pop();
-        const raw = await env.CCv4_DATA.get(`submission:${id}`);
+        const raw = await env.CCv5_DATA.get(`submission:${id}`);
         if (!raw) return json({ error: "Not found." }, 404);
         const existing = JSON.parse(raw);
         const body = await request.json();
         const updated = { ...existing, ...body, id };
-        await env.CCv4_DATA.put(`submission:${id}`, JSON.stringify(updated));
+        await env.CCv5_DATA.put(`submission:${id}`, JSON.stringify(updated));
         return json({ record: updated });
       }
 
@@ -1402,21 +1402,21 @@ export default {
         const body = await request.json().catch(() => ({}));
         if (body.name) {
           const cls = body.pupilClass || "unassigned";
-          await env.CCv4_DATA.delete(pupilKey(cls, body.name));
-          await env.CCv4_DATA.delete(pupilHistoryKey(cls, body.name));
+          await env.CCv5_DATA.delete(pupilKey(cls, body.name));
+          await env.CCv5_DATA.delete(pupilHistoryKey(cls, body.name));
         } else {
-          const idx = JSON.parse((await env.CCv4_DATA.get("submissions_index")) || "[]");
+          const idx = JSON.parse((await env.CCv5_DATA.get("submissions_index")) || "[]");
           const pairs = new Set();
           for (const id of idx) {
-            const raw = await env.CCv4_DATA.get(`submission:${id}`);
+            const raw = await env.CCv5_DATA.get(`submission:${id}`);
             if (!raw) continue;
             const s = JSON.parse(raw);
             pairs.add(`${s.pupilClass || "unassigned"}::${s.pupilName}`);
           }
           for (const pair of pairs) {
             const [cls, name] = pair.split("::");
-            await env.CCv4_DATA.delete(pupilKey(cls, name));
-            await env.CCv4_DATA.delete(pupilHistoryKey(cls, name));
+            await env.CCv5_DATA.delete(pupilKey(cls, name));
+            await env.CCv5_DATA.delete(pupilHistoryKey(cls, name));
           }
         }
         return json({ ok: true });
@@ -1425,11 +1425,11 @@ export default {
       // ---------- PUPIL TRACKING (v6) ----------
       if (pathname === "/api/teacher/pupils" && request.method === "GET") {
         if (!requireTeacher(session)) return json({ error: "Not authorised." }, 403);
-        const list = await env.CCv4_DATA.list({ prefix: "pupil:" });
+        const list = await env.CCv5_DATA.list({ prefix: "pupil:" });
         const pupils = [];
         for (const { name: key } of list.keys) {
           if (key.endsWith(":history")) continue;
-          const raw = await env.CCv4_DATA.get(key);
+          const raw = await env.CCv5_DATA.get(key);
           if (raw) pupils.push(JSON.parse(raw));
         }
         pupils.sort((a, b) => (a.pupilClass || "").localeCompare(b.pupilClass || "") || a.name.localeCompare(b.name));
@@ -1441,9 +1441,9 @@ export default {
         const name = (url.searchParams.get("name") || "").trim();
         const pupilClass = (url.searchParams.get("class") || "unassigned").trim();
         if (!name) return badRequest("Missing pupil name.");
-        const raw = await env.CCv4_DATA.get(pupilKey(pupilClass, name));
+        const raw = await env.CCv5_DATA.get(pupilKey(pupilClass, name));
         const pupil = raw ? JSON.parse(raw) : { name, pupilClass, bestScore: 0, totalScore: 0, attempts: 0 };
-        const historyRaw = await env.CCv4_DATA.get(pupilHistoryKey(pupilClass, name));
+        const historyRaw = await env.CCv5_DATA.get(pupilHistoryKey(pupilClass, name));
         const history = historyRaw ? JSON.parse(historyRaw) : [];
         const { strengths, concerns, rows } = computeStrengthsConcerns(history);
         return json({ pupil, history, strengths, concerns, rows });
@@ -1462,8 +1462,8 @@ export default {
           tags: Array.isArray(body.tags) ? body.tags : [],
           coach: sanitizeCoach(body.coach),
         };
-        const isNew = !(await env.CCv4_DATA.get(`topic:${id}`));
-        await env.CCv4_DATA.put(`topic:${id}`, JSON.stringify(topic));
+        const isNew = !(await env.CCv5_DATA.get(`topic:${id}`));
+        await env.CCv5_DATA.put(`topic:${id}`, JSON.stringify(topic));
         if (isNew) await pushIndex(env, "topics_index", id);
         return json({ topic });
       }
@@ -1471,7 +1471,7 @@ export default {
       if (pathname.startsWith("/api/teacher/topics/") && request.method === "DELETE") {
         if (!requireTeacher(session)) return json({ error: "Not authorised." }, 403);
         const id = pathname.split("/").pop();
-        await env.CCv4_DATA.delete(`topic:${id}`);
+        await env.CCv5_DATA.delete(`topic:${id}`);
         await removeFromIndex(env, "topics_index", id);
         return json({ ok: true });
       }
