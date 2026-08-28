@@ -1,9 +1,9 @@
-name = "chit-chat-v4"
+name = "just-a-chit-chat"
 main = "src/index.js"
 compatibility_date = "2024-11-01"
 
 # --- KV namespace ---
-# Create with:  wrangler kv:namespace create CC_DATA
+# Create with:  wrangler kv:namespace create CCv4_DATA
 # Then paste the returned id below.
 kv_namespaces = [
   { binding = "CCv4_DATA", id = "359bdf1ba6d34a0ea683add47fe1f25e" }
@@ -12,25 +12,28 @@ kv_namespaces = [
 # --- Teacher password ---
 # Lives in KV (not hardcoded in this file or the source).
 # Set/replace it once with:
-#   wrangler kv:key put --binding=CC_DATA "config:teacher_password" "yourSecretPassword"
+#   wrangler kv:key put --binding=CCv4_DATA "config:teacher_password" "yourSecretPassword"
 # It can also be changed later from inside the Teacher Tools > Settings tab.
 
-# --- AI marking: Groq -> Gemini -> Workers AI -> offline scorer ---
-# 1st marker: Groq (fast, generous free tier). Set the real key as a Worker
+# --- AI marking: Gemini -> Groq -> Workers AI -> offline scorer ---
+# 1st marker: Google Gemini (vision-capable - it's the only one of the three
+# that can actually see the topic picture). Set the real key as a Worker
 # SECRET - never paste it into this file or any source file:
-#   wrangler secret put GROQ_API_KEY
-# (paste the key from console.groq.com when prompted)
-#
-# 2nd marker: Google Gemini (also a generous free tier). Also a Worker SECRET:
 #   wrangler secret put GEMINI_API_KEY
 # (paste the key from aistudio.google.com/apikey when prompted)
 #
-# 3rd marker: Cloudflare Workers AI. Free, built in, no signup - this binding
-# is all it needs.
+# 2nd marker: Groq (fast, generous free tier, text-only). Also a Worker SECRET:
+#   wrangler secret put GROQ_API_KEY
+# (paste the key from console.groq.com when prompted)
 #
-# If GROQ_API_KEY is missing or a Groq call fails, marking falls back to
-# Gemini; if that's also missing/fails, it falls back to Workers AI; if that's
+# 3rd marker: Cloudflare Workers AI. Free, built in, no signup, text-only -
+# this binding is all it needs.
+#
+# If GEMINI_API_KEY is missing or a Gemini call fails, marking falls back to
+# Groq; if that's also missing/fails, it falls back to Workers AI; if that's
 # also unavailable, it falls back further to an offline rule-based scorer so
-# the app never hard-fails.
+# the app never hard-fails. Groq and Workers AI can't see the picture, so
+# they instead use each topic's optional "Picture Description" field
+# (Teacher Tools -> Topics) to judge the Evidence part - see the README.
 [ai]
 binding = "AI"
