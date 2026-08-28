@@ -862,7 +862,7 @@ async function callGroq(env, system, user, model) {
 // ---------- Provider: Google Gemini (2nd marker, https://aistudio.google.com/apikey) ----------
 async function callGemini(env, system, user, image) {
   const model = "gemini-2.5-flash"; // fast + cheap, generous free tier, multimodal
-  const parts = [{ text: user }];
+  const userParts = [{ text: user }];
   if (image && image.base64) {
     parts.push({ inline_data: { mime_type: image.mimeType, data: image.base64 } });
   }
@@ -888,7 +888,7 @@ async function callGemini(env, system, user, image) {
   }
   const data = await resp.json();
   const candidate = data.candidates && data.candidates[0];
-  const parts = candidate && candidate.content && candidate.content.parts;
+  const candidateParts = candidate && candidate.content && candidate.content.parts;
   const text = parts && parts[0] && parts[0].text;
   if (!text) throw new Error("Gemini: empty response");
   return extractJson(text);
