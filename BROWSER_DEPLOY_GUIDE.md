@@ -56,7 +56,7 @@ own servers doing it, not your computer.
 2. In the left sidebar, find **Storage & Databases → KV** (naming may vary
    slightly, e.g. "Workers KV").
 3. Click **Create a namespace** (or **Create namespace**).
-4. Name it `CC_DATA` (matching the binding name in `wrangler.toml`) and create it.
+4. Name it `CCv4_DATA` (matching the binding name in `wrangler.toml`) and create it.
 5. Copy the **Namespace ID** it shows you — you'll need it in the next step.
 
 ### A4. Put the real KV namespace ID into `wrangler.toml`
@@ -65,7 +65,7 @@ own servers doing it, not your computer.
    (edit)** icon.
 2. Find the line:
    ```toml
-   { binding = "CC_DATA", id = "REPLACE_WITH_YOUR_KV_NAMESPACE_ID" }
+   { binding = "CCv4_DATA", id = "REPLACE_WITH_YOUR_KV_NAMESPACE_ID" }
    ```
 3. Replace `REPLACE_WITH_YOUR_KV_NAMESPACE_ID` with the real ID you copied
    in step A3, keeping the quotes.
@@ -81,36 +81,38 @@ own servers doing it, not your computer.
    choose the `just-a-chit-chat` repository.
 5. Cloudflare should detect `wrangler.toml` automatically and pre-fill the
    build/deploy settings from it (this is what picks up the `[ai]` binding
-   and the `CC_DATA` KV binding — you shouldn't need to type these in
+   and the `CCv4_DATA` KV binding — you shouldn't need to type these in
    manually, but you can double check them in the next step).
 6. Confirm/start the deployment. Cloudflare will build and deploy the
    Worker; this typically takes under a minute.
 
-### A6. Add your Groq (and optionally Gemini) API key as secrets
+### A6. Add your Gemini (and optionally Groq) API key as secrets
 
 1. Once the Worker exists, open it in the Cloudflare dashboard and go to
    **Settings → Variables and Bindings** (wording may vary — look for
    "Environment Variables" or "Secrets" if you don't see this exact label).
 2. Add a new variable:
-   - Name: `GROQ_API_KEY`
-   - Value: your Groq key
-   - Type: **Secret / Encrypted** (not plain text) — this matches what
-     `wrangler secret put GROQ_API_KEY` would have done locally.
-3. Optional, but recommended for a stronger fallback chain: add a second
-   variable the same way:
    - Name: `GEMINI_API_KEY`
    - Value: your key from [Google AI Studio](https://aistudio.google.com/apikey)
+   - Type: **Secret / Encrypted** (not plain text) — this matches what
+     `wrangler secret put GEMINI_API_KEY` would have done locally. Gemini is
+     the primary marker since it's the only one that can see the topic
+     picture.
+3. Optional, but recommended for a stronger fallback chain: add a second
+   variable the same way:
+   - Name: `GROQ_API_KEY`
+   - Value: your key from [console.groq.com](https://console.groq.com)
    - Type: **Secret / Encrypted**
 4. Save. The values won't be visible again after saving — that's expected
    and is the whole point of a secret.
 5. While you're in this panel, confirm there's a binding for **Workers AI**
-   named `AI` and a **KV Namespace** binding named `CC_DATA` pointing at the
+   named `AI` and a **KV Namespace** binding named `CCv4_DATA` pointing at the
    namespace you created — add them here manually if `wrangler.toml`
    auto-detection didn't pick them up.
 
 ### A7. Set the teacher password (this replaces the `wrangler kv:key put` command)
 
-1. Go back to **Storage & Databases → KV**, open the `CC_DATA` namespace.
+1. Go back to **Storage & Databases → KV**, open the `CCv4_DATA` namespace.
 2. Click **"Add entry"** (or **"Add key-value pair"**).
 3. Key: `config:teacher_password`
 4. Value: whatever password you want teachers to use to unlock the
@@ -150,11 +152,11 @@ this project needs.
    at the bottom).
 5. In the editor's bindings/settings panel, add the same things as Path A
    step A6:
-   - A **KV Namespace** binding named `CC_DATA` (create the namespace here
+   - A **KV Namespace** binding named `CCv4_DATA` (create the namespace here
      if you haven't already — same as Path A step A3)
    - A **Workers AI** binding named `AI`
-   - A **Secret** named `GROQ_API_KEY` with your Groq key
-   - Optionally, a **Secret** named `GEMINI_API_KEY` with your Gemini key
+   - A **Secret** named `GEMINI_API_KEY` with your Gemini key
+   - Optionally, a **Secret** named `GROQ_API_KEY` with your Groq key
 6. Set the teacher password the same way as Path A step A7 (Storage &
    Databases → KV → your namespace → add entry
    `config:teacher_password` → your password).
@@ -177,10 +179,15 @@ Whichever path you used, from here the app behaves exactly as described in
   session.
 - Typing **palpatine** as the name prompts for the teacher password you set
   in step A7/B6, unlocking Teacher Tools (Leaderboard, Submissions, Topics,
-  Settings).
-- Marking uses Groq first, then Gemini (if you set `GEMINI_API_KEY`), then
-  Workers AI automatically if those are missing or a call fails — no extra
-  setup needed for the Workers AI fallback since the `AI` binding covers it.
+  Pupils, Settings). Pupils can also log in as `Name@Class` (e.g.
+  `Ashraf@5IG`) so their teacher can track progress by class in the new
+  Pupils tab.
+- Marking uses Gemini first (it's the only provider that can see the topic
+  picture), then Groq, then Workers AI automatically if those are missing or
+  a call fails — no extra setup needed for the Workers AI fallback since the
+  `AI` binding covers it. Groq and Workers AI can't see the picture, so they
+  rely on each topic's optional "Picture Description" field instead (Teacher
+  Tools → Topics).
 - Every marked question shows a green "AI connected" or red "AI unavailable"
   badge so pupils and teachers can see when a question fell all the way
   through to the offline scorer.
@@ -190,12 +197,12 @@ Whichever path you used, from here the app behaves exactly as described in
 - **Blank page or error at the `.workers.dev` URL** — open the Worker's
   **Logs** or **Deployments** tab in the Cloudflare dashboard to see the
   actual error message.
-- **"Not authorised" or KV-related errors** — double-check the `CC_DATA`
+- **"Not authorised" or KV-related errors** — double-check the `CCv4_DATA`
   binding name matches exactly (case-sensitive) in both `wrangler.toml`
   (or the editor's binding panel) and the actual KV namespace.
 - **Marking always uses the fallback / feedback looks generic** — check
-  that `GROQ_API_KEY` was saved as a **Secret**, not a plain text variable,
-  and that there's no typo in the name.
+  that `GEMINI_API_KEY` (or `GROQ_API_KEY`) was saved as a **Secret**, not a
+  plain text variable, and that there's no typo in the name.
 - **UI labels don't match this guide** — Cloudflare and GitHub occasionally
   redesign their dashboards. Tell me what you're actually seeing (a
   screenshot description, menu names visible to you) and I'll help you find
